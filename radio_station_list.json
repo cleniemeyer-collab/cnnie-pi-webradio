@@ -1,0 +1,95 @@
+{
+  "version": 1,
+  "stations": [
+    {
+      "id": "rb-12fd3b13bc8acf79f66e",
+      "name": "SWR1 RP",
+      "audio_url": "https://liveradio.swr.de/sw282p3/swr1rp/",
+      "metadata_url": "https://liveradio.swr.de/sw282p3/swr1rp/",
+      "logo_file": "logos/swr1_rp.png",
+      "source": "radio-browser",
+      "startup": false
+    },
+    {
+      "id": "rb-9d34296ba283ac8adc91",
+      "name": "Yle Radio Suomi, Helsinki",
+      "audio_url": "http://icecast.live.yle.fi/radio/YleRS/icecast.audio",
+      "metadata_url": "http://icecast.live.yle.fi/radio/YleRS/icecast.audio",
+      "logo_file": "logos/yle_radio_suomi_helsinki.png",
+      "source": "radio-browser",
+      "startup": false
+    },
+    {
+      "id": "local-dc77e94d084fd84583e9",
+      "name": "SWR2",
+      "audio_url": "https://liveradio.swr.de/sw282p3/swr2/play.mp3",
+      "metadata_url": "https://liveradio.swr.de/sw282p3/swr2/play.mp3",
+      "logo_file": "logos/swr2.png",
+      "source": "csv-import",
+      "startup": false
+    },
+    {
+      "id": "local-d662ebaa2d6f62aad62d",
+      "name": "SWR3",
+      "audio_url": "https://liveradio.swr.de/sw282p3/swr3/play.mp3",
+      "metadata_url": "https://liveradio.swr.de/sw282p3/swr3/play.mp3",
+      "logo_file": "logos/swr3.png",
+      "source": "csv-import",
+      "startup": true
+    },
+    {
+      "id": "local-9d372d3d1d45630349eb",
+      "name": "HR2",
+      "audio_url": "https://dispatcher.rndfnk.com/hr/hr2/live/mp3/high",
+      "metadata_url": "https://dispatcher.rndfnk.com/hr/hr2/live/mp3/high",
+      "logo_file": "logos/hr2.png",
+      "source": "csv-import",
+      "startup": false
+    },
+    {
+      "id": "local-c5492e9e9ffd33704c15",
+      "name": "HR3",
+      "audio_url": "https://dispatcher.rndfnk.com/hr/hr3/live/mp3/high",
+      "metadata_url": "https://dispatcher.rndfnk.com/hr/hr3/live/mp3/high",
+      "logo_file": "logos/hr3.png",
+      "source": "csv-import",
+      "startup": false
+    },
+    {
+      "id": "local-2f7253484d9a50b76d1a",
+      "name": "Rockland",
+      "audio_url": "https://stream.rockland-digital.de/rockland/mp3-128/stream.mp3",
+      "metadata_url": "https://stream.rockland-digital.de/rockland/mp3-128/stream.mp3",
+      "logo_file": "logos/rockland.png",
+      "source": "csv-import",
+      "startup": false
+    },
+    {
+      "id": "rb-bfd5cf0a1746d8b7c4ea",
+      "name": "NDR 2",
+      "audio_url": "https://icecast.ndr.de/ndr/ndr2/niedersachsen/mp3/128/stream.mp3",
+      "metadata_url": "https://icecast.ndr.de/ndr/ndr2/niedersachsen/mp3/128/stream.mp3",
+      "logo_file": "logos/ndr_2.png",
+      "source": "radio-browser",
+      "startup": false
+    },
+    {
+      "id": "rb-46d6a991ac82722b8b29",
+      "name": "Radio FFN",
+      "audio_url": "https://ffn-de-hz-fal-stream04-cluster01.radiohost.de/ffn_mp3-192",
+      "metadata_url": "http://player.ffn.de/ffn.aac",
+      "logo_file": "logos/radio_ffn.png",
+      "source": "radio-browser",
+      "startup": false
+    },
+    {
+      "id": "rb-f863e12b09bdc95e6313",
+      "name": "Hit Radio FFH",
+      "audio_url": "http://mp3.ffh.de/radioffh/hqlivestream.mp3",
+      "metadata_url": "http://mp3.ffh.de/radioffh/hqlivestream.mp3",
+      "logo_file": "logos/hit_radio_ffh.png",
+      "source": "radio-browser",
+      "startup": false
+    }
+  ]
+}
