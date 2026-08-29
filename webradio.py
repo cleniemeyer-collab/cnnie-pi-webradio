@@ -18,7 +18,7 @@ import musicpd
 gi.require_version("Gst", "1.0")
 from gi.repository import Gst
 from PyQt5.QtCore import QEvent, QSize, Qt, QThread, QTimer, pyqtSignal
-from PyQt5.QtGui import QColor, QIcon, QPainter, QPixmap
+from PyQt5.QtGui import QColor, QFont, QIcon, QPainter, QPixmap
 from PyQt5.QtWidgets import (
     QApplication,
     QDialog,
@@ -59,25 +59,31 @@ class ImmichApiError(Exception):
 
 
 class ImmichSlideshowLoader(QThread):
-    image_received = pyqtSignal(bytes)
+    image_received = pyqtSignal(bytes, object)
     status_received = pyqtSignal(str)
 
     def __init__(self, config_file, parent=None):
         super().__init__(parent)
         self.config_file = config_file
         self.stop_event = threading.Event()
-        self.navigation_event = threading.Event()
-        self.navigation_lock = threading.Lock()
+        self.control_event = threading.Event()
+        self.control_lock = threading.Lock()
         self.navigation_step = 0
+        self.paused = False
 
     def stop(self):
         self.stop_event.set()
-        self.navigation_event.set()
+        self.control_event.set()
 
     def navigate(self, direction):
-        with self.navigation_lock:
+        with self.control_lock:
             self.navigation_step += direction
-        self.navigation_event.set()
+        self.control_event.set()
+
+    def set_paused(self, paused):
+        with self.control_lock:
+            self.paused = paused
+        self.control_event.set()
 
     @staticmethod
     def request(url, api_key, data=None):
@@ -106,7 +112,7 @@ class ImmichSlideshowLoader(QThread):
         with self.request(url, api_key, data) as response:
             return json.load(response)
 
-    def load_asset_ids(self, base_url, api_key):
+    def load_assets(self, base_url, api_key):
         albums = self.request_json(base_url + "/api/albums", api_key)
         album = next(
             (item for item in albums if item.get("albumName") == "WEB Radio"),
@@ -124,7 +130,7 @@ class ImmichSlideshowLoader(QThread):
             file=sys.stderr,
         )
 
-        image_ids = []
+        asset_records = []
         page = 1
         search_url = base_url + "/api/search/metadata"
         while not self.stop_event.is_set():
@@ -137,18 +143,41 @@ class ImmichSlideshowLoader(QThread):
             result = self.request_json(search_url, api_key, payload)
             assets = result.get("assets", {})
             items = assets.get("items", [])
-            image_ids.extend(item["id"] for item in items if item.get("id"))
+            for item in items:
+                asset_id = item.get("id")
+                if not asset_id:
+                    continue
+                exif = item.get("exifInfo") or {}
+                asset_records.append({
+                    "id": asset_id,
+                    "_metadataComplete": isinstance(item.get("exifInfo"), dict) and all(
+                        key in exif
+                        for key in (
+                            "dateTimeOriginal", "city", "state", "country",
+                            "latitude", "longitude",
+                        )
+                    ),
+                    "localDateTime": item.get("localDateTime"),
+                    "fileCreatedAt": item.get("fileCreatedAt"),
+                    "exifInfo": {
+                        key: exif.get(key)
+                        for key in (
+                            "dateTimeOriginal", "city", "state", "country",
+                            "latitude", "longitude",
+                        )
+                    },
+                })
             next_page = assets.get("nextPage")
             if not next_page or not items:
                 break
             page = int(next_page)
-        if not image_ids:
+        if not asset_records:
             raise ValueError("Immich-Album WEB Radio enthält keine Bilder")
         print(
-            f"Immich API: POST {search_url} -> {len(image_ids)} Album-Bilder geladen",
+            f"Immich API: POST {search_url} -> {len(asset_records)} Album-Bilder geladen",
             file=sys.stderr,
         )
-        return image_ids
+        return asset_records
 
     def load_thumbnail(self, base_url, api_key, asset_id):
         url = base_url + "/api/assets/" + urllib.parse.quote(asset_id) + "/thumbnail?size=preview"
@@ -164,6 +193,96 @@ class ImmichSlideshowLoader(QThread):
             self.status_received.emit(message)
             return None
 
+    @staticmethod
+    def metadata_is_complete(asset):
+        return bool(asset.get("_metadataComplete"))
+
+    def load_asset_details(self, base_url, api_key, asset):
+        if self.metadata_is_complete(asset):
+            return asset
+        url = base_url + "/api/assets/" + urllib.parse.quote(asset["id"])
+        details = self.request_json(url, api_key)
+        detail_exif = details.get("exifInfo") or {}
+        merged = dict(asset)
+        merged["_metadataComplete"] = True
+        merged["localDateTime"] = details.get("localDateTime") or asset.get("localDateTime")
+        merged["fileCreatedAt"] = details.get("fileCreatedAt") or asset.get("fileCreatedAt")
+        merged["exifInfo"] = {
+            key: detail_exif.get(key)
+            for key in (
+                "dateTimeOriginal", "city", "state", "country", "latitude", "longitude"
+            )
+        }
+        return merged
+
+    def safe_load_asset_details(self, base_url, api_key, asset):
+        try:
+            return self.load_asset_details(base_url, api_key, asset)
+        except (ImmichApiError, OSError, TypeError, ValueError, urllib.error.URLError) as error:
+            print("Bildinformationen konnten nicht geladen werden: " + str(error), file=sys.stderr)
+            return asset
+
+    @staticmethod
+    def format_date(value):
+        text = str(value or "").strip()
+        year_match = re.match(r"^(\d{4})", text)
+        if not year_match:
+            return ""
+        year = int(year_match.group(1))
+        full_date = re.match(r"^\d{4}-(\d{1,2})-(\d{1,2})(?:T|\s|$)", text)
+        if not full_date:
+            return str(year)
+        month = int(full_date.group(1))
+        day = int(full_date.group(2))
+        if not 1 <= month <= 12 or not 1 <= day <= 31:
+            return str(year)
+        return f"{day:02d}.{month:02d}.{year:04d}"
+
+    @staticmethod
+    def format_location(exif):
+        parts = []
+        seen_parts = set()
+        for key in ("city", "state", "country"):
+            value = str(exif.get(key) or "").strip()
+            for part in (item.strip() for item in value.split(",")):
+                normalized = part.casefold()
+                if part and normalized not in seen_parts:
+                    parts.append(part)
+                    seen_parts.add(normalized)
+        if parts:
+            return ", ".join(parts)
+        try:
+            latitude = float(exif.get("latitude"))
+            longitude = float(exif.get("longitude"))
+        except (TypeError, ValueError):
+            return ""
+        latitude_direction = "N" if latitude >= 0 else "S"
+        longitude_direction = "E" if longitude >= 0 else "W"
+        return (
+            f"{abs(latitude):.5f}° {latitude_direction}, "
+            f"{abs(longitude):.5f}° {longitude_direction}"
+        )
+
+    def display_metadata(self, asset):
+        exif = asset.get("exifInfo") or {}
+        date_value = (
+            exif.get("dateTimeOriginal")
+            or asset.get("localDateTime")
+            or asset.get("fileCreatedAt")
+        )
+        return {
+            "date": self.format_date(date_value),
+            "location": self.format_location(exif),
+        }
+
+    def load_slide(self, base_url, api_key, asset):
+        detailed_asset = self.safe_load_asset_details(base_url, api_key, asset)
+        asset.update(detailed_asset)
+        image = self.safe_load_thumbnail(base_url, api_key, detailed_asset["id"])
+        if image is None:
+            return None
+        return image, self.display_metadata(detailed_asset)
+
     def run(self):
         stage = "Konfiguration"
         try:
@@ -174,50 +293,66 @@ class ImmichSlideshowLoader(QThread):
                 self.status_received.emit("Immich-Konfiguration fehlt")
                 return
             stage = "Albumdaten"
-            asset_ids = self.load_asset_ids(base_url, api_key)
-            if not asset_ids:
+            asset_records = self.load_assets(base_url, api_key)
+            if not asset_records:
                 self.status_received.emit("Keine Bilder in Immich gefunden")
                 return
-            random.shuffle(asset_ids)
+            random.shuffle(asset_records)
             index = 0
-            thumbnail_cache = {}
+            slide_cache = {}
             while not self.stop_event.is_set():
-                asset_id = asset_ids[index]
+                asset = asset_records[index]
+                asset_id = asset["id"]
                 stage = "Vorschaubild"
-                if asset_id in thumbnail_cache:
-                    current_image = thumbnail_cache.pop(asset_id)
+                if asset_id in slide_cache:
+                    current_slide = slide_cache.pop(asset_id)
                 else:
-                    current_image = self.safe_load_thumbnail(base_url, api_key, asset_id)
-                if current_image is None:
-                    index = (index + 1) % len(asset_ids)
+                    current_slide = self.load_slide(base_url, api_key, asset)
+                if current_slide is None:
+                    index = (index + 1) % len(asset_records)
                     continue
                 if self.stop_event.is_set():
                     return
-                self.image_received.emit(current_image)
+                current_image, current_metadata = current_slide
+                self.image_received.emit(current_image, current_metadata)
 
-                next_index = (index + 1) % len(asset_ids)
-                next_id = asset_ids[next_index]
-                if next_id not in thumbnail_cache:
-                    next_image = self.safe_load_thumbnail(base_url, api_key, next_id)
-                    if next_image is not None:
-                        thumbnail_cache[next_id] = next_image
+                next_index = (index + 1) % len(asset_records)
+                next_asset = asset_records[next_index]
+                next_id = next_asset["id"]
+                if next_id not in slide_cache:
+                    next_slide = self.load_slide(base_url, api_key, next_asset)
+                    if next_slide is not None:
+                        slide_cache[next_id] = next_slide
                 if self.stop_event.is_set():
                     return
 
-                manually_navigated = self.navigation_event.wait(SLIDE_DURATION_SECONDS)
-                self.navigation_event.clear()
-                if self.stop_event.is_set():
-                    return
-                if manually_navigated:
-                    with self.navigation_lock:
+                deadline = time.monotonic() + SLIDE_DURATION_SECONDS
+                while not self.stop_event.is_set():
+                    with self.control_lock:
+                        paused = self.paused
+                    timeout = None if paused else max(0, deadline - time.monotonic())
+                    control_changed = self.control_event.wait(timeout)
+                    self.control_event.clear()
+                    if self.stop_event.is_set():
+                        return
+                    with self.control_lock:
                         step = self.navigation_step
                         self.navigation_step = 0
-                    index = (index + step) % len(asset_ids)
-                else:
-                    index = next_index
-                thumbnail_cache = {
-                    key: value for key, value in thumbnail_cache.items()
-                    if key in {asset_ids[index], asset_ids[(index + 1) % len(asset_ids)]}
+                        paused = self.paused
+                    if step:
+                        index = (index + step) % len(asset_records)
+                        break
+                    if not control_changed:
+                        index = next_index
+                        break
+                    if not paused:
+                        deadline = time.monotonic() + SLIDE_DURATION_SECONDS
+                slide_cache = {
+                    key: value for key, value in slide_cache.items()
+                    if key in {
+                        asset_records[index]["id"],
+                        asset_records[(index + 1) % len(asset_records)]["id"],
+                    }
                 }
         except (ImmichApiError, OSError, ValueError, KeyError, urllib.error.URLError) as error:
             if stage == "Albumdaten":
@@ -319,6 +454,8 @@ class RadioWindow(QWidget):
         self.slideshow_loader = None
         self.slideshow_loaders = set()
         self.slideshow_pixmap = None
+        self.slideshow_metadata = {"date": "", "location": ""}
+        self.slideshow_paused = False
 
         Gst.init(None)
         self.player = Gst.ElementFactory.make("playbin", "radio-player")
@@ -477,6 +614,18 @@ class RadioWindow(QWidget):
         self.slideshow_image = QLabel("Bilder werden geladen …", self.slideshow_overlay)
         self.slideshow_image.setObjectName("slideshowImage")
         self.slideshow_image.setAlignment(Qt.AlignCenter)
+        self.slideshow_date = QLabel(self.slideshow_overlay)
+        self.slideshow_date.setObjectName("slideshowDate")
+        self.slideshow_date.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        self.slideshow_date.setWordWrap(False)
+        self.slideshow_location = QLabel(self.slideshow_overlay)
+        self.slideshow_location.setObjectName("slideshowLocation")
+        self.slideshow_location.setAlignment(Qt.AlignHCenter | Qt.AlignVCenter)
+        self.slideshow_location.setWordWrap(True)
+        assert self.slideshow_date.parent() is self.slideshow_overlay
+        assert self.slideshow_location.parent() is self.slideshow_overlay
+        self.slideshow_date.hide()
+        self.slideshow_location.hide()
         self.slideshow_previous = QPushButton("‹", self.slideshow_overlay)
         self.slideshow_previous.setObjectName("slideshowNavigation")
         self.slideshow_previous.setFixedSize(88, 150)
@@ -485,7 +634,14 @@ class RadioWindow(QWidget):
         self.slideshow_next.setObjectName("slideshowNavigation")
         self.slideshow_next.setFixedSize(88, 150)
         self.slideshow_next.clicked.connect(lambda: self.navigate_slideshow(1))
-        self.slideshow_overlay.activated.connect(self.stop_slideshow)
+        self.slideshow_pause = QPushButton("⏸", self.slideshow_overlay)
+        self.slideshow_pause.setObjectName("slideshowControl")
+        self.slideshow_pause.setFixedSize(64, 64)
+        self.slideshow_pause.clicked.connect(self.toggle_slideshow_pause)
+        self.slideshow_close = QPushButton("×", self.slideshow_overlay)
+        self.slideshow_close.setObjectName("slideshowControl")
+        self.slideshow_close.setFixedSize(64, 64)
+        self.slideshow_close.clicked.connect(self.stop_slideshow)
         self.slideshow_overlay.hide()
 
         self.dark_overlay = DarkOverlay(self)
@@ -590,6 +746,15 @@ class RadioWindow(QWidget):
             }
             QWidget#slideshowOverlay { background: #000000; }
             QLabel#slideshowImage { background: #000000; color: #c5ccda; font-size: 24px; }
+            QLabel#slideshowDate, QLabel#slideshowLocation {
+                background: rgba(0, 0, 0, 175);
+                border-radius: 8px;
+                color: #ffffff;
+                font-family: sans-serif;
+                font-size: 21px;
+                font-weight: 400;
+                padding: 7px 10px;
+            }
             QPushButton#slideshowNavigation {
                 background: rgba(35, 45, 60, 220);
                 border: 2px solid #8fc9ff;
@@ -599,6 +764,20 @@ class RadioWindow(QWidget):
                 padding: 0;
             }
             QPushButton#slideshowNavigation:pressed { background: #3a76af; }
+            QPushButton#slideshowControl {
+                background: rgba(35, 45, 60, 180);
+                border: 1px solid rgba(255, 255, 255, 190);
+                border-radius: 16px;
+                color: #ffffff;
+                font-size: 34px;
+                min-width: 64px;
+                max-width: 64px;
+                min-height: 64px;
+                max-height: 64px;
+                margin: 0;
+                padding: 0;
+            }
+            QPushButton#slideshowControl:pressed { background: rgba(58, 76, 100, 210); }
             QWidget#darkOverlay { background: #000000; }
         """)
 
@@ -659,6 +838,11 @@ class RadioWindow(QWidget):
             return
         self.idle_timer.stop()
         self.slideshow_pixmap = None
+        self.slideshow_metadata = {"date": "", "location": ""}
+        self.slideshow_paused = False
+        self.slideshow_pause.setText("⏸")
+        self.slideshow_date.hide()
+        self.slideshow_location.hide()
         self.slideshow_image.setPixmap(QPixmap())
         self.slideshow_image.setText("")
         loader = ImmichSlideshowLoader(IMMICH_CONFIG_FILE, self)
@@ -673,6 +857,13 @@ class RadioWindow(QWidget):
         if self.slideshow_loader is not None and self.slideshow_overlay.isVisible():
             self.slideshow_loader.navigate(direction)
 
+    def toggle_slideshow_pause(self):
+        if self.slideshow_loader is None or not self.slideshow_overlay.isVisible():
+            return
+        self.slideshow_paused = not self.slideshow_paused
+        self.slideshow_pause.setText("▶" if self.slideshow_paused else "⏸")
+        self.slideshow_loader.set_paused(self.slideshow_paused)
+
     def stop_slideshow(self, restart_idle_timer=True):
         loader = self.slideshow_loader
         self.slideshow_loader = None
@@ -680,6 +871,9 @@ class RadioWindow(QWidget):
             loader.stop()
         self.slideshow_overlay.hide()
         self.slideshow_pixmap = None
+        self.slideshow_metadata = {"date": "", "location": ""}
+        self.slideshow_paused = False
+        self.slideshow_pause.setText("⏸")
         if restart_idle_timer and not self.dark_overlay.isVisible():
             self.reset_idle_timer()
 
@@ -696,12 +890,13 @@ class RadioWindow(QWidget):
         if self.slideshow_pixmap is None and self.slideshow_overlay.isVisible():
             self.slideshow_image.setText(message)
 
-    def show_slideshow_image(self, image_data):
+    def show_slideshow_image(self, image_data, metadata):
         if self.slideshow_loader is None or self.dark_overlay.isVisible():
             return
         pixmap = QPixmap()
         if pixmap.loadFromData(image_data):
             self.slideshow_pixmap = pixmap
+            self.slideshow_metadata = metadata if isinstance(metadata, dict) else {}
             self.slideshow_image.setText("")
             self.slideshow_overlay.setGeometry(self.rect())
             self.layout_slideshow_overlay()
@@ -711,20 +906,86 @@ class RadioWindow(QWidget):
     def layout_slideshow_overlay(self):
         if not hasattr(self, "slideshow_image"):
             return
-        image_width = min(800, self.slideshow_overlay.width())
-        image_height = min(600, self.slideshow_overlay.height())
-        image_x = (self.slideshow_overlay.width() - image_width) // 2
-        image_y = (self.slideshow_overlay.height() - image_height) // 2
-        self.slideshow_image.setGeometry(image_x, image_y, image_width, image_height)
-        button_y = (self.slideshow_overlay.height() - self.slideshow_previous.height()) // 2
-        self.slideshow_previous.move(18, button_y)
-        self.slideshow_next.move(
-            self.slideshow_overlay.width() - self.slideshow_next.width() - 18,
-            button_y,
+        overlay_width = self.slideshow_overlay.width()
+        overlay_height = self.slideshow_overlay.height()
+        if overlay_width <= 0 or overlay_height <= 0:
+            return
+
+        edge_margin = 18
+        control_size = 64
+
+        pause_x = max(0, min(
+            (overlay_width - control_size) // 2,
+            overlay_width - control_size,
+        ))
+        self.slideshow_pause.setGeometry(pause_x, edge_margin, control_size, control_size)
+
+        close_x = max(0, overlay_width - control_size - edge_margin)
+        self.slideshow_close.setGeometry(close_x, edge_margin, control_size, control_size)
+
+        navigation_y = max(
+            0,
+            min(
+                (overlay_height - self.slideshow_previous.height()) // 2,
+                overlay_height - self.slideshow_previous.height(),
+            ),
         )
+        self.slideshow_previous.move(edge_margin, navigation_y)
+        self.slideshow_next.move(
+            max(0, overlay_width - self.slideshow_next.width() - edge_margin),
+            navigation_y,
+        )
+
+        image_width = min(800, overlay_width)
+        image_height = min(600, overlay_height)
+        image_x = (overlay_width - image_width) // 2
+        image_y = (overlay_height - image_height) // 2
+        self.slideshow_image.setGeometry(image_x, image_y, image_width, image_height)
+        self.scale_slideshow_image()
+
+        metadata_font = QFont("DejaVu Sans")
+        metadata_font.setPixelSize(21)
+        metadata_font.setWeight(QFont.Normal)
+
+        date_text = str(self.slideshow_metadata.get("date") or "").strip()
+        date_font = QFont(metadata_font)
+        self.slideshow_date.setFont(date_font)
+        self.slideshow_date.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        self.slideshow_date.setWordWrap(False)
+        self.slideshow_date.setText(date_text)
+        if date_text:
+            self.slideshow_date.setGeometry(18, 18, 165, 48)
+            self.slideshow_date.show()
+        else:
+            self.slideshow_date.hide()
+
+        location_text = str(self.slideshow_metadata.get("location") or "").strip()
+        self.slideshow_location.setFont(metadata_font)
+        self.slideshow_location.setAlignment(Qt.AlignHCenter | Qt.AlignVCenter)
+        self.slideshow_location.setWordWrap(True)
+        self.slideshow_location.setText(location_text)
+        if location_text:
+            location_width = min(600, max(0, overlay_width - 220))
+            location_height = min(76, max(0, overlay_height - edge_margin))
+            location_x = max(0, (overlay_width - location_width) // 2)
+            location_y = max(0, overlay_height - location_height - edge_margin)
+            self.slideshow_location.setGeometry(
+                location_x,
+                location_y,
+                location_width,
+                location_height,
+            )
+            self.slideshow_location.show()
+        else:
+            self.slideshow_location.hide()
+
+        self.slideshow_image.lower()
+        self.slideshow_date.raise_()
+        self.slideshow_location.raise_()
         self.slideshow_previous.raise_()
         self.slideshow_next.raise_()
-        self.scale_slideshow_image()
+        self.slideshow_pause.raise_()
+        self.slideshow_close.raise_()
 
     def scale_slideshow_image(self):
         if self.slideshow_pixmap is None or not hasattr(self, "slideshow_image"):
