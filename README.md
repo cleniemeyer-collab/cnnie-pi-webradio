@@ -13,6 +13,8 @@ Web-Senderverwaltung und Immich-Diashow.
 - Dunkelmodus
 - Immich-Diashow aus dem Album `WEB Radio`
 - automatischer Diashow-Start nach zwei Minuten Inaktivität
+- geschützter Web-Player mit Gastanmeldung (`GAST` / initial `gast`)
+- lokale Verwaltung des Gastzugangs über die Admin-Oberfläche
 
 ## Installation
 
@@ -39,10 +41,16 @@ eintragen. Diese Datei wird von Git ignoriert.
 ## Prüfung und Start
 
 ```bash
-python3 -m py_compile webradio.py station_store.py radio_browser.py web_admin.py
+python3 -m py_compile webradio.py station_store.py radio_browser.py web_admin.py \
+  web_player_server.py web_player.py web_auth.py
 DISPLAY=:0 python3 webradio.py
 ```
 
-Die ausführliche technische Übergabe und die nächste geplante Änderung stehen
-in [`PROJEKTSTAND.md`](PROJEKTSTAND.md).
+Beim ersten Start wird `web_auth_config.json` mit dem Gastzugang `GAST` und dem
+initialen Passwort `gast` erzeugt. Das Passwort sollte anschließend in der nur
+lokal erreichbaren Admin-Oberfläche auf Port `8088` geändert werden. Die Datei
+wird von Git ignoriert.
+
+Der aktuelle Stand steht in [`STATUS.md`](STATUS.md); die ausführliche technische
+Übergabe befindet sich in [`PROJEKTSTAND.md`](PROJEKTSTAND.md).
 

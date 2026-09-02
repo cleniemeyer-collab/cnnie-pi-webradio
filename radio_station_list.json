@@ -2,20 +2,29 @@
   "version": 1,
   "stations": [
     {
-      "id": "rb-12fd3b13bc8acf79f66e",
-      "name": "SWR1 RP",
-      "audio_url": "https://liveradio.swr.de/sw282p3/swr1rp/",
-      "metadata_url": "https://liveradio.swr.de/sw282p3/swr1rp/",
-      "logo_file": "logos/swr1_rp.png",
-      "source": "radio-browser",
-      "startup": false
-    },
-    {
       "id": "rb-9d34296ba283ac8adc91",
       "name": "Yle Radio Suomi, Helsinki",
       "audio_url": "http://icecast.live.yle.fi/radio/YleRS/icecast.audio",
       "metadata_url": "http://icecast.live.yle.fi/radio/YleRS/icecast.audio",
       "logo_file": "logos/yle_radio_suomi_helsinki.png",
+      "source": "radio-browser",
+      "startup": false
+    },
+    {
+      "id": "rb-324d0c6a08c54be08e33",
+      "name": "Yle Klassinen",
+      "audio_url": "https://icecast.live.yle.fi/radio/YleKlassinen/icecast.audio",
+      "metadata_url": "https://icecast.live.yle.fi/radio/YleKlassinen/icecast.audio",
+      "logo_file": "logos/yle_klassinen.png",
+      "source": "radio-browser",
+      "startup": false
+    },
+    {
+      "id": "rb-12fd3b13bc8acf79f66e",
+      "name": "SWR1 RP",
+      "audio_url": "https://liveradio.swr.de/sw282p3/swr1rp/",
+      "metadata_url": "https://liveradio.swr.de/sw282p3/swr1rp/",
+      "logo_file": "logos/swr1_rp.png",
       "source": "radio-browser",
       "startup": false
     },

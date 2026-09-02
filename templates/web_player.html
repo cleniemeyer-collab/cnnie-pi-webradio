@@ -1,0 +1,793 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<title>Webradio</title>
+<style>
+/* ── Reset & Basis ─────────────────────────────────────────── */
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%;overflow:hidden}
+body{
+  background:#10141c;color:#f5f7fb;
+  font-family:'DejaVu Sans',sans-serif;
+  user-select:none;-webkit-user-select:none;
+  -webkit-tap-highlight-color:transparent;
+}
+
+/* ── Hauptlayout ───────────────────────────────────────────── */
+#app{
+  display:flex;flex-direction:column;
+  height:100vh;height:100dvh;padding:20px 20px 18px;gap:16px;
+}
+
+/* ── NOW-Card ──────────────────────────────────────────────── */
+#nowCard{
+  display:flex;align-items:center;gap:22px;
+  background:#1a2230;border:1px solid #2b374a;border-radius:18px;
+  padding:18px 14px 18px 18px;flex-shrink:0;
+}
+#logoTile{
+  flex:0 0 220px;height:145px;
+  background:#273247;border-radius:14px;
+  display:flex;align-items:center;justify-content:center;
+  overflow:hidden;padding:4px;
+}
+#logoTile img{max-width:100%;max-height:100%;object-fit:contain;border-radius:10px}
+#logoTile .letter{font-size:48px;font-weight:bold;color:#fff}
+#nowText{flex:1;min-width:0;display:flex;flex-direction:column;justify-content:center;gap:4px}
+#nowStation{font-size:34px;font-weight:bold;width:100%;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#trackInfo{font-size:22px;color:#c5ccda;width:100%;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+
+/* ── Carousel ──────────────────────────────────────────────── */
+#carousel{
+  flex:1;display:flex;align-items:center;gap:8px;min-height:0;
+}
+#prevBtn,#nextBtn{
+  flex:0 0 76px;min-width:70px;
+  background:rgba(25,32,44,.85);border:1px solid #4b596c;border-radius:22px;
+  color:#fff;font-size:62px;font-weight:bold;
+  cursor:pointer;display:flex;align-items:center;justify-content:center;
+  transition:background .15s;
+}
+#prevBtn:active,#nextBtn:active{background:rgba(58,76,100,.9)}
+.carousel-inner{flex:1;display:flex;gap:8px;min-width:0}
+.station-btn{
+  border:none;border-radius:18px;color:#fff;font-weight:bold;
+  cursor:pointer;display:flex;flex-direction:column;
+  align-items:center;justify-content:center;gap:6px;
+  padding:10px 12px;transition:background .15s;
+  position:relative;overflow:hidden;
+}
+.station-btn:active{filter:brightness(1.15)}
+.station-btn.center{
+  background:#1769aa;font-size:25px;min-height:205px;
+}
+.station-btn.preview{
+  background:#263348;color:#d9e7f7;font-size:17px;min-height:175px;
+}
+.station-btn .btn-logo{
+  width:96px;height:76px;border-radius:10px;
+  background:#f3f5f8;display:flex;align-items:center;justify-content:center;
+  overflow:hidden;flex-shrink:0;
+}
+.station-btn .btn-logo img{max-width:86px;max-height:66px;object-fit:contain}
+.station-btn .btn-logo .letter{font-size:28px;font-weight:bold;color:#333}
+.station-btn .btn-name{
+  text-align:center;line-height:1.2;word-break:break-word;
+}
+.station-btn .symbol{font-size:20px;margin-top:2px}
+
+/* ── Controls ──────────────────────────────────────────────── */
+#controls{
+  display:grid;grid-template-columns:1fr 1fr 2fr 1fr;
+  gap:16px;flex-shrink:0;
+}
+.ctrl-btn{
+  border:none;border-radius:18px;color:#fff;font-weight:bold;
+  font-size:22px;min-height:78px;cursor:pointer;
+  transition:background .15s;
+}
+.ctrl-btn:active{filter:brightness(1.2)}
+#powerBtn{background:#b6323b}
+#darkBtn{background:#283242}
+#modeBtn{background:#1769aa;font-size:25px}
+#modeBtn.checked{background:#7656b5}
+#slideshowBtn{background:#287a58}
+
+/* ── Slideshow-Overlay ─────────────────────────────────────── */
+#slideshowOverlay{
+  position:fixed;inset:0;background:#000;
+  display:none;flex-direction:column;align-items:center;justify-content:center;
+  z-index:100;
+}
+#slideshowOverlay.active{display:flex}
+#slideshowImage{
+  max-width:800px;max-height:600px;object-fit:contain;
+}
+#slideshowImage.loading{
+  width:1px;height:1px;position:absolute;opacity:0;
+}
+#slideDate,#slideLocation{
+  position:absolute;
+  background:rgba(0,0,0,.65);border-radius:8px;
+  color:#fff;font-size:21px;padding:7px 10px;
+}
+#slideDate{top:18px;left:18px}
+#slideLocation{bottom:18px;left:50%;transform:translateX(-50%);max-width:600px;text-align:center}
+#slidePrev,#slideNext{
+  position:absolute;top:50%;transform:translateY(-50%);
+  background:rgba(35,45,60,.85);border:2px solid #8fc9ff;border-radius:30px;
+  color:#fff;font-size:76px;width:88px;height:150px;
+  cursor:pointer;display:flex;align-items:center;justify-content:center;
+}
+#slidePrev:active,#slideNext:active{background:#3a76af}
+#slidePrev{left:18px}
+#slideNext{right:18px}
+#slidePause,#slideClose{
+  position:absolute;top:18px;
+  background:rgba(35,45,60,.7);border:1px solid rgba(255,255,255,.75);
+  border-radius:16px;color:#fff;font-size:34px;
+  width:64px;height:64px;cursor:pointer;
+  display:flex;align-items:center;justify-content:center;
+}
+#slidePause:active,#slideClose:active{background:rgba(58,76,100,.8)}
+#slidePause{left:50%;transform:translateX(-50%)}
+#slideClose{right:18px;transform:none}
+
+/* ── Dark Overlay ──────────────────────────────────────────── */
+#darkOverlay{
+  position:fixed;inset:0;background:#000;
+  display:none;z-index:90;cursor:pointer;
+}
+#darkOverlay.active{display:block}
+
+/* ── Shutdown-Dialog ───────────────────────────────────────── */
+#shutdownDialog{
+  position:fixed;inset:0;background:rgba(0,0,0,.6);
+  display:none;align-items:center;justify-content:center;z-index:200;
+}
+#shutdownDialog.active{display:flex}
+#shutdownBox{
+  background:#1a2230;border:3px solid #4a586d;border-radius:22px;
+  padding:30px 28px;width:620px;max-width:90vw;text-align:center;
+}
+#shutdownBox h2{font-size:30px;margin-bottom:28px}
+#shutdownBtns{display:flex;gap:24px;justify-content:center}
+#shutdownBtns button{
+  border:3px solid transparent;border-radius:18px;color:#fff;
+  font-size:25px;font-weight:bold;min-width:220px;min-height:90px;cursor:pointer;
+}
+#cancelShutdown{background:#334258;border-color:#8fc9ff}
+#cancelShutdown:active{background:#465a77}
+#confirmShutdown{background:#c52f3c}
+#confirmShutdown:active{background:#e04450}
+
+/* ── Status-Banner ─────────────────────────────────────────── */
+#statusBanner{
+  position:fixed;bottom:20px;left:50%;transform:translateX(-50%);
+  background:rgba(26,34,48,.95);border:1px solid #2b374a;border-radius:12px;
+  padding:10px 20px;font-size:16px;z-index:300;
+  opacity:0;transition:opacity .3s;pointer-events:none;
+}
+#statusBanner.visible{opacity:1}
+
+/* ── Responsive ────────────────────────────────────────────── */
+@media(max-width:768px){
+  #app{padding:10px;gap:8px}
+  #nowCard{padding:10px;gap:12px;border-radius:14px}
+  #logoTile{flex:0 0 100px;height:76px}
+  #nowStation{font-size:22px;width:100%}
+  #trackInfo{font-size:16px;width:100%}
+  #carousel{gap:5px}
+  #prevBtn,#nextBtn{flex:0 0 46px;min-width:46px;font-size:40px;border-radius:16px}
+  .carousel-inner{gap:5px}
+  .station-btn{padding:7px 5px;border-radius:14px}
+  .station-btn.center{font-size:18px;min-height:150px}
+  .station-btn.preview{font-size:13px;min-height:128px}
+  .station-btn .btn-logo{width:58px;height:48px}
+  .station-btn .btn-logo img{max-width:54px;max-height:44px}
+  .ctrl-btn{font-size:16px;min-height:50px;border-radius:14px}
+  #controls{grid-template-columns:1fr 1fr;gap:7px}
+  #slideshowImage{max-width:calc(100vw - 20px);max-height:calc(100dvh - 20px)}
+  #slidePrev,#slideNext{width:54px;height:110px;font-size:50px}
+}
+
+@media(max-width:380px){
+  #app{padding:7px;gap:6px}
+  #logoTile{flex-basis:82px;height:66px}
+  #nowStation{font-size:19px}
+  #trackInfo{font-size:14px}
+  #prevBtn,#nextBtn{flex-basis:40px;min-width:40px}
+  .ctrl-btn{min-height:46px;font-size:14px}
+}
+</style>
+</head>
+<body>
+
+<!-- ── Haupt-App ──────────────────────────────────────────────── -->
+<div id="app">
+  <!-- NOW-Card -->
+  <div id="nowCard">
+    <div id="logoTile"><span class="letter">R</span></div>
+    <div id="nowText">
+      <div id="nowStation">–</div>
+      <div id="trackInfo">Sender werden geladen …</div>
+    </div>
+  </div>
+
+  <!-- Carousel -->
+  <div id="carousel">
+    <button id="prevBtn" aria-label="Vorheriger Sender">‹</button>
+    <div class="carousel-inner" id="carouselInner"></div>
+    <button id="nextBtn" aria-label="Nächster Sender">›</button>
+  </div>
+
+  <!-- Controls -->
+  <div id="controls">
+    <button class="ctrl-btn" id="powerBtn">Ausschalten</button>
+    <button class="ctrl-btn" id="darkBtn">Dunkel</button>
+    <button class="ctrl-btn" id="modeBtn">Quelle: Webradio</button>
+    <button class="ctrl-btn" id="slideshowBtn">Diashow</button>
+  </div>
+</div>
+
+<!-- ── Slideshow-Overlay ─────────────────────────────────────── -->
+<div id="slideshowOverlay">
+  <img id="slideshowImage" class="loading" alt="">
+  <div id="slideDate"></div>
+  <div id="slideLocation"></div>
+  <button id="slidePrev" aria-label="Vorheriges Bild">‹</button>
+  <button id="slideNext" aria-label="Nächstes Bild">›</button>
+  <button id="slidePause" aria-label="Pause">⏸</button>
+  <button id="slideClose" aria-label="Schließen">✕</button>
+</div>
+
+<!-- ── Dark Overlay ──────────────────────────────────────────── -->
+<div id="darkOverlay"></div>
+
+<!-- ── Shutdown-Dialog ───────────────────────────────────────── -->
+<div id="shutdownDialog">
+  <div id="shutdownBox">
+    <h2>Raspberry Pi wirklich ausschalten?</h2>
+    <div id="shutdownBtns">
+      <button id="cancelShutdown">Abbrechen</button>
+      <button id="confirmShutdown">Ausschalten</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── Status-Banner ─────────────────────────────────────────── -->
+<div id="statusBanner"></div>
+
+<script>
+/* ═══════════════════════════════════════════════════════════
+   Web-Radio-Player – Client-seitige Logik
+   ═══════════════════════════════════════════════════════════ */
+
+// ── Basis-URL ermitteln (wichtig für fetch()) ──────────────
+const API_BASE = (location.protocol === "file:") ? "" : location.origin;
+console.log("[Config] API_BASE:", API_BASE || "(leer - file:// erkannt!)");
+
+// ── file:// Warnung ─────────────────────────────────────────
+if(location.protocol === "file:"){
+  console.warn("[WARNUNG] Seite wurde lokal (file://) geoeffnet!");
+  console.warn("[WARNUNG] fetch() wird vom Browser blockiert. Bitte oeffne:");
+  console.warn("[WARNUNG]   http://<raspberry-pi-ip>:8089");
+  // Grossen Hinweis im Browser anzeigen
+  setTimeout(()=>{
+    if(confirm("Diese Seite muss ueber den Web-Server geoeffnet werden.\n\nBitte oeffne im Browser:\nhttp://<raspberry-pi-ip>:8089\n\n(Die IP des Raspberry Pi findest du z.B. mit: ip a)")){
+      window.location.href = "http://192.168.1.100:8089"; // Platzhalter
+    }
+  }, 500);
+}
+
+// ── State ───────────────────────────────────────────────────
+let stations = [];
+let selectedIndex = 0;
+let playingIndex = null;
+let radioPaused = false;
+let mode = "radio";               // "radio" | "mpd"
+let audio = new Audio();
+audio.crossOrigin = "anonymous";
+
+// Slideshow
+let slideInitialized = false;
+let slidePaused = false;
+let slideTimer = null;
+let slideRemaining = 0;
+const SLIDE_DURATION = 90000;     // 90 Sekunden
+const IDLE_TIMEOUT   = 120000;    // 2 Minuten
+let idleTimer = null;
+let csrfToken = "";
+
+// ── DOM-Refs ────────────────────────────────────────────────
+const $  = s => document.querySelector(s);
+const $$ = s => document.querySelectorAll(s);
+const nowStation   = $("#nowStation");
+const trackInfo    = $("#trackInfo");
+const logoTile     = $("#logoTile");
+const carouselInner= $("#carouselInner");
+const statusBanner = $("#statusBanner");
+let statusTimeout  = null;
+
+// ── Status-Banner ───────────────────────────────────────────
+function showStatus(msg, duration=3000){
+  statusBanner.textContent = msg;
+  statusBanner.classList.add("visible");
+  clearTimeout(statusTimeout);
+  statusTimeout = setTimeout(()=>statusBanner.classList.remove("visible"), duration);
+}
+
+// ── API-Helfer ──────────────────────────────────────────────
+async function api(path, opts={}){
+  const r = await fetch(path, opts);
+  if(!r.ok) throw new Error(`API ${path}: HTTP ${r.status}`);
+  return r.json();
+}
+
+// ── Sender laden ────────────────────────────────────────────
+async function loadStations(startPlayback=true){
+  try{
+    const selectedUrl = stations[selectedIndex]?.audio_url;
+    const playingUrl = playingIndex===null ? null : stations[playingIndex]?.audio_url;
+    const data = await api("/api/stations");
+    stations = data.stations || [];
+
+    if(startPlayback){
+      const startup = stations.findIndex(s=>s.startup);
+      if(startup>=0) selectedIndex = startup;
+    } else {
+      const refreshedSelection = stations.findIndex(s=>s.audio_url===selectedUrl);
+      if(refreshedSelection>=0) selectedIndex = refreshedSelection;
+      if(playingUrl!==null){
+        const refreshedPlaying = stations.findIndex(s=>s.audio_url===playingUrl);
+        playingIndex = refreshedPlaying>=0 ? refreshedPlaying : null;
+      }
+    }
+
+    if(stations.length){
+      selectedIndex = Math.min(selectedIndex, stations.length-1);
+      renderCarousel();
+      nowStation.textContent = stations[selectedIndex].name;
+      setLogo(stations[selectedIndex]);
+      if(startPlayback) playStation(selectedIndex);
+    } else {
+      renderCarousel();
+      playingIndex = null;
+      audio.pause();
+      nowStation.textContent = "Keine Sender vorhanden";
+      trackInfo.textContent  = "radio_station_list.json ist leer";
+    }
+  } catch(e){
+    trackInfo.textContent = "Sender konnten nicht geladen werden";
+    console.error(e);
+  }
+}
+
+// ── Logo-Helfer ─────────────────────────────────────────────
+function logoUrl(station){
+  if(!station.logo_file) return null;
+  // logo_file ist bereits "logos/datei.png" → nur Dateiname für /logos/ Endpoint
+  const fileName = station.logo_file.split("/").pop();
+  return "/logos/" + encodeURIComponent(fileName);
+}
+function letterLogo(name){
+  return (name||"R").replace(/\s+/g," ").split(" ").map(w=>w[0]||"").join("").substring(0,2).toUpperCase() || "R";
+}
+function setLogo(station){
+  const url = logoUrl(station);
+  if(url){
+    logoTile.innerHTML = `<img src="${url}" alt="" onerror="this.parentElement.innerHTML='<span class=letter>${letterLogo(station.name)}</span>'">`;
+  } else {
+    logoTile.innerHTML = `<span class="letter">${letterLogo(station.name)}</span>`;
+  }
+}
+
+// ── Audio ───────────────────────────────────────────────────
+function playStation(index){
+  if(index<0||index>=stations.length) return;
+  const s = stations[index];
+  audio.src = s.audio_url;
+  audio.play().catch(()=>showStatus("Wiedergabe gestartet (Ton im Browser)"));
+  playingIndex = index;
+  radioPaused = false;
+  nowStation.textContent = s.name;
+  trackInfo.textContent  = "Wiedergabe läuft …";
+  setLogo(s);
+  renderCarousel();
+}
+function togglePlayPause(){
+  if(playingIndex===null) return;
+  if(audio.paused){
+    audio.play();
+    radioPaused = false;
+    trackInfo.textContent = "Wiedergabe läuft …";
+  } else {
+    audio.pause();
+    radioPaused = true;
+    trackInfo.textContent = "Pausiert";
+  }
+  renderCarousel();
+}
+
+// ── Carousel ────────────────────────────────────────────────
+function visibleOffsets(count){
+  if(count<=1) return [0];
+  if(count===2) return [0,1];
+  if(window.innerWidth<=768) return [-1,0,1];
+  if(count===3) return [-1,0,1];
+  if(count===4) return [-1,0,1,2];
+  return [-2,-1,0,1,2];
+}
+function flexFactor(offset, count){
+  if(count<=1) return 4;
+  if(offset===0) return 4;
+  if(Math.abs(offset)===1) return 2;
+  return 1;
+}
+function renderCarousel(){
+  const count = stations.length;
+  const offsets = visibleOffsets(count);
+  const allOffsets = [-2,-1,0,1,2];
+  carouselInner.innerHTML = "";
+  allOffsets.forEach(off=>{
+    const btn = document.createElement("button");
+    btn.className = "station-btn " + (off===0?"center":"preview");
+    if(!offsets.includes(off)){
+      btn.style.display = "none";
+      carouselInner.appendChild(btn);
+      return;
+    }
+    btn.style.flex = flexFactor(off, count);
+    const idx = ((selectedIndex+off)%count+count)%count;
+    const s = stations[idx];
+    const url = logoUrl(s);
+    const logoHtml = url
+      ? `<div class="btn-logo"><img src="${url}" alt=""></div>`
+      : `<div class="btn-logo"><span class="letter">${letterLogo(s.name)}</span></div>`;
+    let symbol = "";
+    if(off===0){
+      symbol = playingIndex===idx && !radioPaused ? "❚❚" : "▶";
+    }
+    btn.innerHTML = logoHtml + `<div class="btn-name">${s.name}</div>` + (symbol?`<div class="symbol">${symbol}</div>`:"");
+    btn.addEventListener("click",()=>{
+      if(off===0){
+        togglePlayPause();
+      } else {
+        selectedIndex = idx;
+        nowStation.textContent = s.name;
+        playStation(idx);
+      }
+    });
+    carouselInner.appendChild(btn);
+  });
+}
+function browse(dir){
+  if(!stations.length) return;
+  selectedIndex = ((selectedIndex+dir)%stations.length+stations.length)%stations.length;
+  nowStation.textContent = stations[selectedIndex].name;
+  playStation(selectedIndex);
+}
+
+// ── Mode-Toggle (Radio / MPD-Info) ─────────────────────────
+// Der Web-Player spielt immer Web-Streams. Der MPD-Modus wird
+// hier nur als UI-Info angezeigt; die eigentliche MPD-Steuerung
+// läuft über den Admin-Server.
+function toggleMode(){
+  const btn = $("#modeBtn");
+  if(mode==="radio"){
+    mode="mpd";
+    btn.textContent="Quelle: MPD";
+    btn.classList.add("checked");
+    audio.pause();
+    trackInfo.textContent="MPD-Modus (Steuerung über Admin-Oberfläche)";
+    nowStation.textContent="MPD";
+    logoTile.innerHTML='<span class="letter">MP</span>';
+  } else {
+    mode="radio";
+    btn.textContent="Quelle: Webradio";
+    btn.classList.remove("checked");
+    if(stations.length) playStation(selectedIndex);
+  }
+}
+
+// ── Diashow ─────────────────────────────────────────────────
+const slideOverlay  = $("#slideshowOverlay");
+const slideImg      = $("#slideshowImage");
+const slideDate     = $("#slideDate");
+const slideLocation = $("#slideLocation");
+
+function startSlideshow(){
+  if(isDarkMode() || slideInitialized) return;
+  resetIdleTimer();
+  slideInitialized = true;
+  slidePaused = false;
+  slideOverlay.classList.add("active");
+  slideImg.classList.add("loading");
+  slideDate.textContent="";
+  slideLocation.textContent="";
+  console.log("[Slideshow] Init gestartet");
+  // Init asynchron starten
+  fetch("/api/slideshow/init")
+    .then(r=>{ if(!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
+    .then(data=>{
+      console.log("[Slideshow] Init-Request gesendet, warte auf Laden...");
+      showStatus("Bilder werden geladen ...");
+      pollSlideshowReady();
+    })
+    .catch(e=>{
+      console.error("[Slideshow] Init Fehler:", e);
+      showStatus("Diashow: "+e.message, 6000);
+      stopSlideshow();
+    });
+}
+
+// Pollt den Lade-Status, bis die Diashow bereit ist
+function pollSlideshowReady(){
+  fetch("/api/slideshow/status")
+    .then(r=>r.json())
+    .then(data=>{
+      console.log("[Slideshow] Status:", data.state, data.message||"");
+      if(data.state === "ready"){
+        showStatus(`${data.message}`);
+        fetchNextSlide();
+      } else if(data.state === "error"){
+        throw new Error(data.message||"Laden fehlgeschlagen");
+      } else {
+        // Noch loading – weiter pollen (500ms)
+        setTimeout(pollSlideshowReady, 500);
+      }
+    })
+    .catch(e=>{
+      console.error("[Slideshow] Poll-Fehler:", e);
+      showStatus("Diashow: "+e.message, 6000);
+      stopSlideshow();
+    });
+}
+
+function fetchNextSlide(){
+  console.log("[Slideshow] Hole nächstes Bild");
+  fetch("/api/slideshow/next")
+    .then(r=>{ if(!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
+    .then(data=>{
+      if(!data.ok) throw new Error(data.error);
+      console.log("[Slideshow] Bild geladen");
+      slideImg.classList.remove("loading");
+      slideImg.src = data.image;
+      slideDate.textContent = data.meta.date||"";
+      slideLocation.textContent = data.meta.location||"";
+      scheduleNextSlide();
+    })
+    .catch(e=>{
+      console.error("[Slideshow] Bildfehler:", e);
+      showStatus("Bildfehler: "+e.message, 4000);
+      // Verzögerter Retry (5s), um Endlosschleifen zu vermeiden
+      clearTimeout(slideTimer);
+      slideTimer = setTimeout(fetchNextSlide, 5000);
+    });
+}
+
+function scheduleNextSlide(){
+  clearTimeout(slideTimer);
+  slideRemaining = SLIDE_DURATION;
+  if(!slidePaused){
+    slideTimer = setTimeout(fetchNextSlide, slideRemaining);
+  }
+}
+
+function navigateSlide(dir){
+  if(!slideInitialized) return;
+  clearTimeout(slideTimer);
+  const url = dir>0 ? "/api/slideshow/next" : "/api/slideshow/prev";
+  console.log("[Slideshow] Navigation:", dir>0?"next":"prev");
+  fetch(url)
+    .then(r=>{ if(!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
+    .then(data=>{
+      if(!data.ok) throw new Error(data.error);
+      slideImg.classList.remove("loading");
+      slideImg.src = data.image;
+      slideDate.textContent = data.meta.date||"";
+      slideLocation.textContent = data.meta.location||"";
+      scheduleNextSlide();
+    })
+    .catch(e=>{
+      console.error("[Slideshow] Navigationsfehler:", e);
+      showStatus("Bildfehler: "+e.message, 3000);
+    });
+}
+
+function toggleSlidePause(){
+  if(!slideInitialized) return;
+  slidePaused = !slidePaused;
+  $("#slidePause").textContent = slidePaused ? "▶" : "⏸";
+  if(slidePaused){
+    clearTimeout(slideTimer);
+  } else {
+    // Bei Resume: nächstes Bild holen
+    fetchNextSlide();
+  }
+}
+
+function stopSlideshow(){
+  clearTimeout(slideTimer);
+  slideInitialized = false;
+  slidePaused = false;
+  slideOverlay.classList.remove("active");
+  slideImg.classList.add("loading");
+  slideImg.src = "";
+  slideDate.textContent="";
+  slideLocation.textContent="";
+  $("#slidePause").textContent="⏸";
+  resetIdleTimer();
+}
+
+// ── Dark Mode ───────────────────────────────────────────────
+function isDarkMode(){ return $("#darkOverlay").classList.contains("active"); }
+function showDark(){
+  stopSlideshow();
+  clearTimeout(idleTimer);
+  $("#darkOverlay").classList.add("active");
+}
+function hideDark(){
+  $("#darkOverlay").classList.remove("active");
+  resetIdleTimer();
+}
+
+// ── Shutdown ────────────────────────────────────────────────
+function showShutdownDialog(){
+  $("#shutdownDialog").classList.add("active");
+}
+function hideShutdownDialog(){
+  $("#shutdownDialog").classList.remove("active");
+}
+function authHeaders(){
+  return csrfToken ? {"X-CSRF-Token":csrfToken} : {};
+}
+function doShutdown(){
+  hideShutdownDialog();
+  fetch("/api/shutdown",{method:"POST",headers:authHeaders()}).then(()=>{
+    showStatus("Shutdown wird angefordert …", 10000);
+  }).catch(()=>showStatus("Shutdown fehlgeschlagen", 5000));
+}
+async function loadLoginStatus(){
+  try{
+    const data=await api("/api/login-status");
+    csrfToken=data.csrf_token||"";
+  }catch(e){
+    console.error("Loginstatus konnte nicht geladen werden:",e);
+  }
+}
+async function logout(){
+  stopSlideshow();
+  audio.pause();
+  audio.removeAttribute("src");
+  audio.load();
+  playingIndex=null;
+  radioPaused=true;
+  renderCarousel();
+  try{
+    if(!csrfToken) await loadLoginStatus();
+    const r=await fetch("/api/logout",{method:"POST",headers:authHeaders()});
+    if(!r.ok) throw new Error(`HTTP ${r.status}`);
+    window.location.href="/login";
+  }catch(e){
+    showStatus("Abmeldung fehlgeschlagen: "+e.message,5000);
+  }
+}
+
+// ── Idle-Timer ──────────────────────────────────────────────
+function resetIdleTimer(){
+  clearTimeout(idleTimer);
+  if(!isDarkMode() && !slideInitialized){
+    idleTimer = setTimeout(startSlideshow, IDLE_TIMEOUT);
+  }
+}
+function trackActivity(){
+  resetIdleTimer();
+}
+
+// ── Swipe-Erkennung (Slideshow) ─────────────────────────────
+(function(){
+  let sx=0, sy=0, moved=false;
+  slideOverlay.addEventListener("touchstart",e=>{
+    sx=e.touches[0].clientX; sy=e.touches[0].clientY; moved=false;
+  });
+  slideOverlay.addEventListener("touchmove",e=>{
+    moved=true;
+  });
+  slideOverlay.addEventListener("touchend",e=>{
+    if(!moved) return;
+    const dx=e.changedTouches[0].clientX-sx;
+    const dy=e.changedTouches[0].clientY-sy;
+    if(Math.abs(dx)>=70 && Math.abs(dx)>Math.abs(dy)){
+      navigateSlide(dx<0?1:-1);
+    }
+  });
+  // Maus-Swipe für Desktop
+  let msx=0, msy=0, mmoved=false, mdown=false;
+  slideOverlay.addEventListener("mousedown",e=>{
+    if(e.target.closest("button")) return;
+    msx=e.clientX; msy=e.clientY; mmoved=false; mdown=true;
+  });
+  window.addEventListener("mousemove",e=>{
+    if(!mdown) return;
+    mmoved=true;
+  });
+  window.addEventListener("mouseup",e=>{
+    if(!mdown) return;
+    mdown=false;
+    if(!mmoved) return;
+    const dx=e.clientX-msx, dy=e.clientY-msy;
+    if(Math.abs(dx)>=70 && Math.abs(dx)>Math.abs(dy)){
+      navigateSlide(dx<0?1:-1);
+    }
+  });
+})();
+
+// ── Tastatur ────────────────────────────────────────────────
+document.addEventListener("keydown",e=>{
+  trackActivity();
+  if(slideInitialized){
+    if(e.key==="ArrowLeft")  navigateSlide(-1);
+    else if(e.key==="ArrowRight") navigateSlide(1);
+    else if(e.key===" "){ e.preventDefault(); toggleSlidePause(); }
+    else if(e.key==="Escape") stopSlideshow();
+    return;
+  }
+  if(e.key==="ArrowLeft")  browse(-1);
+  else if(e.key==="ArrowRight") browse(1);
+  else if(e.key===" "){ e.preventDefault(); togglePlayPause(); }
+  else if(e.key==="Escape"){
+    if(isDarkMode()) hideDark();
+  }
+});
+
+// ── Activity-Tracking ───────────────────────────────────────
+["mousedown","mousemove","touchstart","keydown"].forEach(evt=>{
+  document.addEventListener(evt, trackActivity, {passive:true});
+});
+
+// ── Event-Listener ──────────────────────────────────────────
+$("#prevBtn").addEventListener("click",()=>browse(-1));
+$("#nextBtn").addEventListener("click",()=>browse(1));
+$("#powerBtn").addEventListener("click", logout);
+$("#darkBtn").addEventListener("click", showDark);
+$("#modeBtn").addEventListener("click", toggleMode);
+$("#slideshowBtn").addEventListener("click", startSlideshow);
+$("#darkOverlay").addEventListener("click", hideDark);
+$("#slidePrev").addEventListener("click",()=>navigateSlide(-1));
+$("#slideNext").addEventListener("click",()=>navigateSlide(1));
+$("#slidePause").addEventListener("click", toggleSlidePause);
+$("#slideClose").addEventListener("click", stopSlideshow);
+$("#shutdownDialog").addEventListener("click",e=>{
+  if(e.target===$("#shutdownDialog")) hideShutdownDialog();
+});
+$("#cancelShutdown").addEventListener("click", hideShutdownDialog);
+$("#confirmShutdown").addEventListener("click", doShutdown);
+
+// Klick auf NOW-Card → Play/Pause
+$("#nowCard").addEventListener("click", togglePlayPause);
+
+// Swipe auf Carousel
+(function(){
+  let sx=0, moved=false;
+  const c=$("#carousel");
+  c.addEventListener("touchstart",e=>{sx=e.touches[0].clientX;moved=false;});
+  c.addEventListener("touchmove",()=>{moved=true;});
+  c.addEventListener("touchend",e=>{
+    if(!moved) return;
+    const dx=e.changedTouches[0].clientX-sx;
+    if(Math.abs(dx)>=70) browse(dx<0?1:-1);
+  });
+})();
+
+// ── Start ───────────────────────────────────────────────────
+window.addEventListener("resize", renderCarousel);
+loadLoginStatus();
+loadStations().then(()=>resetIdleTimer());
+// Periodisch Sender-Liste aktualisieren (alle 30s)
+setInterval(()=>loadStations(false), 30000);
+</script>
+</body>
+</html>

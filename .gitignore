@@ -1,4 +1,6 @@
 immich_config.json
+web_auth_config.json
+.web_auth_*.tmp
 __pycache__/
 *.py[cod]
 *.log

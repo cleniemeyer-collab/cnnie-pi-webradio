@@ -36,6 +36,7 @@ from PyQt5.QtWidgets import (
 
 from station_store import StationStore, station_slug
 from web_admin import RadioAdminServer
+from web_player_server import WebPlayerServer
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -498,8 +499,24 @@ class RadioWindow(QWidget):
                 port=8088,
             )
             self.web_server.start()
+            print("Web-Admin-Server auf Port 8088 gestartet", file=sys.stderr)
         except OSError:
             self.web_server = None
+
+        # Web-Player-Server (GUI via Browser)
+        try:
+            self.web_player_server = WebPlayerServer(
+                self.station_store,
+                LOGO_DIR,
+                BASE_DIR,
+                IMMICH_CONFIG_FILE,
+                self.stations_changed.emit,
+                port=8089,
+            )
+            self.web_player_server.start()
+            print("Web-Player auf Port 8089 gestartet (http://<pi-ip>:8089)", file=sys.stderr)
+        except OSError:
+            self.web_player_server = None
 
     @staticmethod
     def station_tuples(records):
@@ -828,6 +845,9 @@ class RadioWindow(QWidget):
         if self.web_server is not None:
             self.web_server.stop()
             self.web_server = None
+        if hasattr(self, "web_player_server") and self.web_player_server is not None:
+            self.web_player_server.stop()
+            self.web_player_server = None
 
     def reset_idle_timer(self):
         if not self.dark_overlay.isVisible() and not self.slideshow_overlay.isVisible():

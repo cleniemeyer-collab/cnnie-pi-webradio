@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<title>Webradio – Anmeldung</title>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%;overflow:hidden}
+body{
+  background:#10141c;color:#f5f7fb;
+  font-family:'DejaVu Sans',sans-serif;
+  display:flex;align-items:center;justify-content:center;
+}
+#loginCard{
+  background:#1a2230;border:1px solid #2b374a;border-radius:18px;
+  padding:36px 32px;width:420px;max-width:90vw;text-align:center;
+}
+h1{font-size:28px;margin-bottom:8px}
+.subtitle{color:#75baff;font-size:14px;margin-bottom:28px}
+input{
+  width:100%;min-height:52px;border:none;border-radius:13px;
+  font-size:1.05rem;padding:0 15px;margin-bottom:12px;
+  background:#fff;color:#111;
+}
+input:focus{outline:2px solid #1769aa}
+button{
+  width:100%;min-height:52px;border:none;border-radius:13px;
+  font-size:1.1rem;font-weight:bold;cursor:pointer;
+  background:#1769aa;color:#fff;
+}
+button:active{background:#3a76af}
+button:disabled{background:#4a5260;color:#c6cad0;cursor:default}
+#errorMsg{
+  margin-top:16px;padding:12px;border-radius:10px;
+  background:#6e2930;font-size:14px;display:none;
+}
+#errorMsg.visible{display:block}
+.hint{margin-top:18px;color:#c5ccda;font-size:12px}
+</style>
+</head>
+<body>
+
+<div id="loginCard">
+  <h1>Webradio</h1>
+  <p class="subtitle">Bitte melden Sie sich an</p>
+  <form id="loginForm">
+
+    <input id="username" name="username" type="text" placeholder="Benutzername"
+           autocomplete="username" required autofocus>
+    <input id="password" name="password" type="password" placeholder="Passwort"
+           autocomplete="current-password" required>
+    <button id="loginBtn" type="submit">Anmelden</button>
+  </form>
+  <p id="errorMsg"></p>
+  <p class="hint">Standardzugang: <strong>GAST</strong> / <strong>gast</strong></p>
+</div>
+
+<script>
+const form = document.getElementById("loginForm");
+const btn  = document.getElementById("loginBtn");
+const err  = document.getElementById("errorMsg");
+
+form.addEventListener("submit", async e => {
+  e.preventDefault();
+  btn.disabled = true;
+  btn.textContent = "Anmelden …";
+  err.classList.remove("visible");
+
+  const body = new URLSearchParams({
+    username: document.getElementById("username").value,
+    password: document.getElementById("password").value,
+  });
+
+  try {
+    const r = await fetch("/api/login", {
+      method: "POST",
+      headers: {"Content-Type": "application/x-www-form-urlencoded;charset=UTF-8"},
+      body: body.toString(),
+    });
+    if (r.ok) {
+      window.location.href = "/";
+    } else {
+      const data = await r.json().catch(() => ({}));
+      if (r.status === 429) {
+        err.textContent = data.message || "Zu viele Versuche. Bitte warten Sie.";
+      } else {
+        err.textContent = data.message || "Anmeldung fehlgeschlagen. Bitte überprüfen Sie Ihre Eingabe.";
+      }
+      err.classList.add("visible");
+    }
+  } catch {
+    err.textContent = "Keine Verbindung zum Server.";
+    err.classList.add("visible");
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "Anmelden";
+  }
+});
+</script>
+</body>
+</html>

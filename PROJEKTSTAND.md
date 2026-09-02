@@ -32,7 +32,11 @@ eine Immich-Diashow als Bildschirmschoner angezeigt werden.
   Startsender
 - `radio_browser.py` – Radio-Browser- und radio.de-Suche, Streamauswahl und
   Logo-Cache
-- `web_admin.py` – Weboberfläche zur Senderverwaltung auf TCP-Port 8088
+- `web_admin.py` – Weboberfläche zur Sender- und Gastzugangsverwaltung auf TCP-Port 8088
+- `web_player_server.py` – geschützter Web-Player und Immich-Proxy auf Port 8089
+- `web_player.py` – Standalone-Start des Web-Players
+- `web_auth.py` – Passwort-Hashing, Sessions, Rate-Limit und CSRF
+- `templates/web_player.html` und `templates/login.html` – Browseroberflächen
 - `radio_station_list.json` – aktuelle Senderliste
 - `radio_station_list.csv` – frühere Liste beziehungsweise Migrationsquelle
 - `logos/` – lokal gespeicherte Senderlogos
@@ -173,22 +177,16 @@ Die aktive `webradio.py` hatte dabei 43.123 Byte und enthielt unter anderem
 belegen die vorhandene Codefassung, ersetzen aber keinen praktischen Test auf
 dem Raspberry Pi nach weiteren Änderungen.
 
-## Nächste gewünschte Änderung
+## Neuere Erweiterungen
 
-Die Immich-Diashow soll Bildinformationen als dezente Overlays erhalten:
+Die Metadatenanzeige der Immich-Diashow ist inzwischen umgesetzt. Datum und Ort
+werden sowohl in der lokalen Qt-Oberfläche als auch im Web-Player angezeigt,
+sofern Immich entsprechende Informationen liefert.
 
-- Aufnahmedatum oben links, sofern vorhanden
-- Ortsangabe am unteren Bildrand, sofern vorhanden
-- gut lesbarer halbtransparenter Hintergrund
-- dynamisch passende Schriftgröße und Umbrüche
-- Positionierung relativ zur tatsächlich sichtbaren Bildfläche, nicht zu den
-  schwarzen Rändern
-- Bilder ohne Datum oder Ort müssen weiterhin normal angezeigt werden
-
-Diese Metadatenanzeige ist im derzeit gesicherten Stand noch nicht vorhanden.
-Vor der Implementierung ist zu prüfen, welche Metadaten die vorhandene
-Immich-Version über den sinnvollsten API-Endpunkt tatsächlich liefert. Die
-Netzwerkabfragen dürfen die Qt-Ereignisschleife nicht blockieren.
+Der Web-Player besitzt außerdem eine serverseitige Gastanmeldung. Initial gilt
+`GAST` / `gast`. Gaststatus und Passwort können über die Admin-Oberfläche aus
+einem privaten Netz verwaltet werden. Die lokale Auth-Konfiguration
+`web_auth_config.json` wird nicht versioniert.
 
 ## Start und Prüfung auf dem Raspberry Pi
 
@@ -196,7 +194,8 @@ Syntaxprüfung:
 
 ```bash
 cd /home/pi/cnnie-pi-webradio
-python3 -m py_compile webradio.py station_store.py radio_browser.py web_admin.py
+python3 -m py_compile webradio.py station_store.py radio_browser.py web_admin.py \
+  web_player_server.py web_player.py web_auth.py
 ```
 
 Programm neu starten:
