@@ -1,0 +1,18 @@
+[Unit]
+Description=Cnnie Webradio Web-Player
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=pi
+Group=pi
+WorkingDirectory=/home/pi/cnnie-pi-webradio
+ExecStart=/usr/bin/python3 /home/pi/cnnie-pi-webradio/web_player.py --host 0.0.0.0 --port 8089
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

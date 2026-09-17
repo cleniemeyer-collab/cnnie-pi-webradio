@@ -132,6 +132,7 @@ Nützlich, wenn der Pi ohne Display läuft.
 |---|---|---|
 | `GET` | `/` | Player-GUI (HTML) |
 | `GET` | `/api/stations` | Senderliste als JSON |
+| `GET` | `/api/metadata?id=<sender-id>` | aktueller ICY-Titel des Senders |
 | `GET` | `/logos/<datei>` | Sender-Logo-Bild |
 
 ### Anmeldung
@@ -163,7 +164,7 @@ Player, Sender, Logos, Diashow und Shutdown verlangen eine gültige Sitzung.
 |---|---|---|
 | **Audio** | GStreamer (lokal am Pi) | HTML5 `<audio>` (im Browser) |
 | **Diashow** | PyQt-Thread + Immich | Server-Proxy + JS-Timer |
-| **Titel-Metadaten** | GStreamer ICY-Tags | Station-Name (ICY im Browser nicht verfügbar) |
+| **Titel-Metadaten** | GStreamer ICY-Tags | serverseitiger ICY-Abruf im Abstand von 10 Sekunden |
 | **Ausschalten** | `sudo shutdown` via subprocess | stoppt Audio/Diashow und meldet den Browser ab |
 | **Display** | Frameless Fullscreen | Browser-Fenster/Tab |
 | **MPD** | echte MPD-Steuerung | nur Anzeige; keine MPD-Steuerung |

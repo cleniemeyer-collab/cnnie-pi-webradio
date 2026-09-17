@@ -15,6 +15,7 @@ Album `WEB Radio`.
 
 - PyQt5-Vollbildoberfläche für den Touchscreen
 - Radiowiedergabe über GStreamer und den Audioausgang des Raspberry Pi
+- Audio-Buffer-Watchdog mit automatischem Stream-Neustart nach 25 Sekunden Stillstand
 - Senderkarussell mit lokalen Senderlogos
 - Webradio- und MPD-Modus
 - Dunkelmodus
@@ -101,6 +102,15 @@ Folgende Prüfungen wurden während der Änderungen erfolgreich ausgeführt:
 
 Ein vollständiger Systemtest mit Raspberry Pi, Reverse-Proxy, Immich und
 externem Mobilgerät muss auf der Zielumgebung erfolgen.
+
+## Boot und Dienste
+
+- Der Web-Player kann mit `deploy/cnnie-webradio-web.service` unabhängig von
+  X11 als systemd-Dienst gestartet werden.
+- Die lokale GUI bleibt im X11-/Desktop-Autostart.
+- `WEBRADIO_START_WEB_PLAYER=0` verhindert dabei eine zweite Web-Player-Instanz
+  aus `webradio.py`.
+- Einzelheiten stehen in [`BOOT_AUTOSTART.md`](BOOT_AUTOSTART.md).
 
 ## Offene Punkte
 

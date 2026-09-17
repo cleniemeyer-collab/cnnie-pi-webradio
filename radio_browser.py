@@ -13,7 +13,10 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
-from PyQt5.QtGui import QImage
+try:
+    from PyQt5.QtGui import QImage
+except ImportError:
+    QImage = None
 
 from station_store import normalize_station_name, stable_station_id, station_slug
 

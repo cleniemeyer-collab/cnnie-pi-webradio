@@ -20,7 +20,9 @@ aus.
 - Startsender und konfigurierbare Senderreihenfolge
 - Play/Pause und Senderwechsel
 - GStreamer-Metadaten in der lokalen Oberfläche
+- GStreamer-Watchdog: Neustart nach 25 Sekunden ohne dekodierte Audio-Buffer
 - HTML5-Audio im Web-Player
+- serverseitiger ICY-Titelabruf für die Webanzeige im Abstand von zehn Sekunden
 - pausierte Web-Wiedergabe bleibt auch beim Aktualisieren der Senderliste
   pausiert
 - lokale MPD-Steuerung in der PyQt5-Oberfläche
@@ -148,6 +150,10 @@ Dabei starten:
 
 ### Nur Web-Player
 
+Für einen bootfesten, von X11 unabhängigen Betrieb steht eine systemd-Vorlage
+unter `deploy/cnnie-webradio-web.service` bereit. Details enthält
+[`BOOT_AUTOSTART.md`](BOOT_AUTOSTART.md).
+
 ```bash
 python3 web_player.py
 ```
@@ -192,4 +198,5 @@ python3 -m unittest discover -s tests -v
   Reverse-Proxy muss auf der Zielumgebung erfolgen.
 
 Weitere Details stehen in [`README.md`](README.md),
+[`BOOT_AUTOSTART.md`](BOOT_AUTOSTART.md),
 [`WEB_PLAYER.md`](WEB_PLAYER.md) und [`STATUS.md`](STATUS.md).

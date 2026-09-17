@@ -1,6 +1,7 @@
 #!/usr/bin/python3
 
 import json
+import os
 import random
 import re
 import subprocess
@@ -17,8 +18,8 @@ import musicpd
 
 gi.require_version("Gst", "1.0")
 from gi.repository import Gst
-from PyQt5.QtCore import QEvent, QSize, Qt, QThread, QTimer, pyqtSignal
-from PyQt5.QtGui import QColor, QFont, QIcon, QPainter, QPixmap
+from PyQt5.QtCore import QEvent, QSize, Qt, QThread, QTimer, QUrl, pyqtSignal
+from PyQt5.QtGui import QColor, QDesktopServices, QFont, QIcon, QPainter, QPixmap
 from PyQt5.QtWidgets import (
     QApplication,
     QDialog,
@@ -46,6 +47,8 @@ LOGO_DIR = BASE_DIR / "logos"
 IMMICH_CONFIG_FILE = BASE_DIR / "immich_config.json"
 SLIDESHOW_IDLE_MS = 2 * 60 * 1000
 SLIDE_DURATION_SECONDS = 90
+STREAM_WATCHDOG_INTERVAL_MS = 5000
+STREAM_STALL_TIMEOUT_SECONDS = 25
 
 
 class ImmichApiError(Exception):
@@ -464,10 +467,22 @@ class RadioWindow(QWidget):
             raise RuntimeError("GStreamer-Element 'playbin' konnte nicht erstellt werden")
         self.player.set_property("volume", 1.0)
         self.player.connect("source-setup", self.configure_gstreamer_source)
+        self.audio_monitor = Gst.ElementFactory.make("identity", "audio-buffer-monitor")
+        self.last_audio_buffer_at = 0.0
+        self.stream_started_at = 0.0
+        if self.audio_monitor is not None:
+            self.audio_monitor.set_property("signal-handoffs", True)
+            self.audio_monitor.connect("handoff", self.on_audio_handoff)
+            self.player.set_property("audio-filter", self.audio_monitor)
+        else:
+            print("GStreamer-Watchdog deaktiviert: identity fehlt", file=sys.stderr)
         self.gst_bus = self.player.get_bus()
         self.gst_bus_timer = QTimer(self)
         self.gst_bus_timer.timeout.connect(self.process_gstreamer_bus)
         self.gst_bus_timer.start(100)
+        self.stream_watchdog_timer = QTimer(self)
+        self.stream_watchdog_timer.timeout.connect(self.check_radio_stream)
+        self.stream_watchdog_timer.start(STREAM_WATCHDOG_INTERVAL_MS)
         self.logo_cache = {}
         self.web_server = None
         self.stations_changed.connect(self.reload_stations)
@@ -504,19 +519,21 @@ class RadioWindow(QWidget):
             self.web_server = None
 
         # Web-Player-Server (GUI via Browser)
-        try:
-            self.web_player_server = WebPlayerServer(
-                self.station_store,
-                LOGO_DIR,
-                BASE_DIR,
-                IMMICH_CONFIG_FILE,
-                self.stations_changed.emit,
-                port=8089,
-            )
-            self.web_player_server.start()
-            print("Web-Player auf Port 8089 gestartet (http://<pi-ip>:8089)", file=sys.stderr)
-        except OSError:
-            self.web_player_server = None
+        self.web_player_server = None
+        if os.environ.get("WEBRADIO_START_WEB_PLAYER", "1") != "0":
+            try:
+                self.web_player_server = WebPlayerServer(
+                    self.station_store,
+                    LOGO_DIR,
+                    BASE_DIR,
+                    IMMICH_CONFIG_FILE,
+                    self.stations_changed.emit,
+                    port=8089,
+                )
+                self.web_player_server.start()
+                print("Web-Player auf Port 8089 gestartet (http://<pi-ip>:8089)", file=sys.stderr)
+            except OSError:
+                self.web_player_server = None
 
     @staticmethod
     def station_tuples(records):
@@ -599,7 +616,7 @@ class RadioWindow(QWidget):
 
         controls = QGridLayout()
         controls.setHorizontalSpacing(16)
-        self.power_button = QPushButton("Ausschalten")
+        self.power_button = QPushButton("Aus")
         self.power_button.setObjectName("powerButton")
         self.power_button.clicked.connect(self.confirm_shutdown)
         controls.addWidget(self.power_button, 0, 0)
@@ -609,7 +626,7 @@ class RadioWindow(QWidget):
         self.dark_button.clicked.connect(self.show_dark_screen)
         controls.addWidget(self.dark_button, 0, 1)
 
-        self.mode_button = QPushButton("Quelle: Webradio")
+        self.mode_button = QPushButton("Quelle:\nRadio")
         self.mode_button.setObjectName("modeButton")
         self.mode_button.setCheckable(True)
         self.mode_button.clicked.connect(self.toggle_mode)
@@ -619,10 +636,13 @@ class RadioWindow(QWidget):
         self.slideshow_button.setObjectName("slideshowButton")
         self.slideshow_button.clicked.connect(self.start_slideshow)
         controls.addWidget(self.slideshow_button, 0, 3)
-        controls.setColumnStretch(0, 1)
-        controls.setColumnStretch(1, 1)
-        controls.setColumnStretch(2, 2)
-        controls.setColumnStretch(3, 1)
+
+        self.stations_button = QPushButton("Stationen")
+        self.stations_button.setObjectName("stationsButton")
+        self.stations_button.clicked.connect(self.open_station_selection)
+        controls.addWidget(self.stations_button, 0, 4)
+        for column in range(5):
+            controls.setColumnStretch(column, 1)
         root.addLayout(controls)
 
         self.slideshow_overlay = SlideshowOverlay(self)
@@ -742,23 +762,28 @@ class RadioWindow(QWidget):
             }
             QPushButton#powerButton {
                 background: #b6323b;
-                font-size: 22px;
+                font-size: 18px;
                 min-height: 78px;
             }
             QPushButton#darkButton {
                 background: #283242;
-                font-size: 22px;
+                font-size: 18px;
                 min-height: 78px;
             }
             QPushButton#modeButton {
                 background: #1769aa;
-                font-size: 25px;
+                font-size: 18px;
                 min-height: 78px;
             }
             QPushButton#modeButton:checked { background: #7656b5; }
             QPushButton#slideshowButton {
                 background: #287a58;
-                font-size: 22px;
+                font-size: 18px;
+                min-height: 78px;
+            }
+            QPushButton#stationsButton {
+                background: #7656b5;
+                font-size: 18px;
                 min-height: 78px;
             }
             QWidget#slideshowOverlay { background: #000000; }
@@ -817,6 +842,13 @@ class RadioWindow(QWidget):
             self.reset_idle_timer()
         return super().eventFilter(watched, event)
 
+    def open_station_selection(self):
+        if self.web_server is None:
+            self.track_info.setText("Senderverwaltung ist nicht verfügbar")
+            return
+        if not QDesktopServices.openUrl(QUrl("http://127.0.0.1:8088/")):
+            self.track_info.setText("Senderverwaltung konnte nicht geöffnet werden")
+
     def show_dark_screen(self):
         print("Dunkelmodus durch Button aktiviert", file=sys.stderr)
         self.stop_slideshow(restart_idle_timer=False)
@@ -841,6 +873,7 @@ class RadioWindow(QWidget):
             loader.stop()
             loader.wait(31000)
         self.gst_bus_timer.stop()
+        self.stream_watchdog_timer.stop()
         self.player.set_state(Gst.State.NULL)
         if self.web_server is not None:
             self.web_server.stop()
@@ -1070,6 +1103,8 @@ class RadioWindow(QWidget):
             and self.playing_index is not None
         ):
             if self.radio_paused:
+                self.stream_started_at = time.monotonic()
+                self.last_audio_buffer_at = 0.0
                 self.player.set_state(Gst.State.PLAYING)
                 self.radio_paused = False
             else:
@@ -1081,7 +1116,7 @@ class RadioWindow(QWidget):
             self.stop_mpd()
             self.mode = "radio"
             self.mode_button.setChecked(False)
-            self.mode_button.setText("Quelle: Webradio")
+            self.mode_button.setText("Quelle:\nRadio")
 
         name, url = self.stations[self.selected_index]
         self.player.set_state(Gst.State.NULL)
@@ -1090,6 +1125,8 @@ class RadioWindow(QWidget):
         self.current_artist = ""
         self.current_title = ""
         self.player.set_property("uri", url)
+        self.stream_started_at = time.monotonic()
+        self.last_audio_buffer_at = 0.0
         self.player.set_state(Gst.State.PLAYING)
         self.playing_index = self.selected_index
         self.radio_paused = False
@@ -1102,7 +1139,7 @@ class RadioWindow(QWidget):
         if use_mpd:
             self.player.set_state(Gst.State.NULL)
             self.mode = "mpd"
-            self.mode_button.setText("Quelle: MPD")
+            self.mode_button.setText("Quelle:\nMPD")
             self.now_station.setText("MPD")
             self.track_info.setText("Wiedergabe über Music Player Daemon")
             self.set_logo("MPD")
@@ -1110,7 +1147,7 @@ class RadioWindow(QWidget):
         else:
             self.stop_mpd()
             self.mode = "radio"
-            self.mode_button.setText("Quelle: Webradio")
+            self.mode_button.setText("Quelle:\nRadio")
             if self.playing_index is not None:
                 self.selected_index = self.playing_index
                 self.radio_paused = True
@@ -1142,6 +1179,44 @@ class RadioWindow(QWidget):
 
     def stop_mpd(self):
         self.with_mpd(lambda client: client.stop())
+
+    def on_audio_handoff(self, _identity, _buffer):
+        self.last_audio_buffer_at = time.monotonic()
+
+    def check_radio_stream(self):
+        if (
+            self.audio_monitor is None
+            or self.mode != "radio"
+            or self.radio_paused
+            or self.playing_index is None
+        ):
+            return
+        reference_time = self.last_audio_buffer_at or self.stream_started_at
+        if reference_time <= 0:
+            return
+        stalled_for = time.monotonic() - reference_time
+        if stalled_for < STREAM_STALL_TIMEOUT_SECONDS:
+            return
+        self.restart_radio_stream(stalled_for)
+
+    def restart_radio_stream(self, stalled_for):
+        if self.playing_index is None or self.playing_index >= len(self.stations):
+            return
+        name, url = self.stations[self.playing_index]
+        print(
+            f"Radiostream ohne Audiodaten seit {stalled_for:.1f}s; Neustart: {name}",
+            file=sys.stderr,
+        )
+        self.track_info.setText("Stream wird neu verbunden …")
+        self.player.set_state(Gst.State.NULL)
+        while self.gst_bus.pop() is not None:
+            pass
+        self.current_artist = ""
+        self.current_title = ""
+        self.player.set_property("uri", url)
+        self.stream_started_at = time.monotonic()
+        self.last_audio_buffer_at = 0.0
+        self.player.set_state(Gst.State.PLAYING)
 
     @staticmethod
     def configure_gstreamer_source(_player, source):

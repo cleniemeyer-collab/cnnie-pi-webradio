@@ -80,7 +80,7 @@ body{
 
 /* ── Controls ──────────────────────────────────────────────── */
 #controls{
-  display:grid;grid-template-columns:1fr 1fr 2fr 1fr;
+  display:grid;grid-template-columns:1fr 1fr 1.4fr 1fr 1.4fr;
   gap:16px;flex-shrink:0;
 }
 .ctrl-btn{
@@ -94,6 +94,7 @@ body{
 #modeBtn{background:#1769aa;font-size:25px}
 #modeBtn.checked{background:#7656b5}
 #slideshowBtn{background:#287a58}
+#stationsBtn{background:#7656b5}
 
 /* ── Slideshow-Overlay ─────────────────────────────────────── */
 #slideshowOverlay{
@@ -229,6 +230,7 @@ body{
     <button class="ctrl-btn" id="darkBtn">Dunkel</button>
     <button class="ctrl-btn" id="modeBtn">Quelle: Webradio</button>
     <button class="ctrl-btn" id="slideshowBtn">Diashow</button>
+    <button class="ctrl-btn" id="stationsBtn">Senderauswahl</button>
   </div>
 </div>
 
@@ -385,6 +387,18 @@ function setLogo(station){
 }
 
 // ── Audio ───────────────────────────────────────────────────
+async function refreshMetadata(){
+  if(mode!=="radio" || radioPaused || playingIndex===null || !stations[playingIndex]) return;
+  const stationId=stations[playingIndex].id;
+  try{
+    const data=await api("/api/metadata?id="+encodeURIComponent(stationId));
+    if(mode==="radio" && !radioPaused && playingIndex!==null && stations[playingIndex]?.id===stationId){
+      trackInfo.textContent=data.title||"Wiedergabe läuft …";
+    }
+  }catch(e){
+    console.debug("Titelmetadaten nicht verfügbar:",e);
+  }
+}
 function playStation(index){
   if(index<0||index>=stations.length) return;
   const s = stations[index];
@@ -396,6 +410,7 @@ function playStation(index){
   trackInfo.textContent  = "Wiedergabe läuft …";
   setLogo(s);
   renderCarousel();
+  refreshMetadata();
 }
 function togglePlayPause(){
   if(playingIndex===null) return;
@@ -403,6 +418,7 @@ function togglePlayPause(){
     audio.play();
     radioPaused = false;
     trackInfo.textContent = "Wiedergabe läuft …";
+    refreshMetadata();
   } else {
     audio.pause();
     radioPaused = true;
@@ -755,6 +771,7 @@ $("#powerBtn").addEventListener("click", logout);
 $("#darkBtn").addEventListener("click", showDark);
 $("#modeBtn").addEventListener("click", toggleMode);
 $("#slideshowBtn").addEventListener("click", startSlideshow);
+$("#stationsBtn").addEventListener("click",()=>{window.location.href="/admin";});
 $("#darkOverlay").addEventListener("click", hideDark);
 $("#slidePrev").addEventListener("click",()=>navigateSlide(-1));
 $("#slideNext").addEventListener("click",()=>navigateSlide(1));
@@ -786,8 +803,9 @@ $("#nowCard").addEventListener("click", togglePlayPause);
 window.addEventListener("resize", renderCarousel);
 loadLoginStatus();
 loadStations().then(()=>resetIdleTimer());
-// Periodisch Sender-Liste aktualisieren (alle 30s)
+// Periodisch Sender-Liste und Titelmetadaten aktualisieren
 setInterval(()=>loadStations(false), 30000);
+setInterval(refreshMetadata, 10000);
 </script>
 </body>
 </html>

@@ -6,6 +6,7 @@ import json
 import logging
 import mimetypes
 import random
+import re
 import threading
 import time
 import urllib.error
@@ -15,6 +16,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import web_auth
+import web_admin
+from radio_browser import build_station, search_logical_stations, select_and_cache_logo
+from station_store import UserStationStores, normalize_station_name, stable_station_id
 
 LOGGER = logging.getLogger(__name__)
 
@@ -104,7 +108,6 @@ def _immich_load_assets(config_path):
 
 
 def _format_date(value):
-    import re
     text = str(value or "").strip()
     m = re.match(r"^(\d{4})-(\d{1,2})-(\d{1,2})", text)
     if not m:
@@ -143,6 +146,41 @@ def _display_metadata(asset):
     return {"date": _format_date(dv), "location": _format_location(exif)}
 
 
+def _parse_icy_title(metadata):
+    text = metadata.rstrip(b"\0").decode("utf-8", errors="replace")
+    match = re.search(r"(?:^|;)StreamTitle='([^']*)'", text, re.IGNORECASE)
+    if match is None:
+        return ""
+    title = match.group(1).strip()
+    if not title or re.search(r"(?:https?|icy)://", title, re.IGNORECASE):
+        return ""
+    return title
+
+
+def _fetch_icy_title(url):
+    request = urllib.request.Request(
+        url,
+        headers={"Icy-MetaData": "1", "User-Agent": "Webradio-WebPlayer/1.0"},
+    )
+    with urllib.request.urlopen(request, timeout=10) as response:
+        interval_text = response.headers.get("icy-metaint")
+        if not interval_text:
+            return ""
+        interval = int(interval_text)
+        if interval <= 0 or interval > 1024 * 1024:
+            return ""
+        audio = response.read(interval)
+        if len(audio) != interval:
+            return ""
+        length_byte = response.read(1)
+        if not length_byte:
+            return ""
+        metadata_length = length_byte[0] * 16
+        if metadata_length == 0:
+            return ""
+        return _parse_icy_title(response.read(metadata_length))
+
+
 # ── HTML-Vorlagen ───────────────────────────────────────────────────────────
 
 _BASE_DIR = Path(__file__).resolve().parent
@@ -174,6 +212,7 @@ class WebPlayerServer:
         self.immich_config = Path(immich_config)
         self.on_change = on_change or (lambda: None)
         self.host, self.port = host, port
+        self.user_stores = UserStationStores(store, self.base_dir, self.logo_dir)
 
         self._slide_lock = threading.RLock()
         self._slide_base_url = None
@@ -314,8 +353,17 @@ class WebPlayerServer:
                     return "anonymous"
                 config = owner._auth_config.load()
                 guest_enabled = config.get("guest_enabled", True)
+                guest_username = config.get("guest_username", "GAST")
                 session_id = web_auth.get_session_id_from_cookie(self)
-                return owner._session_store.validate(session_id, guest_enabled)
+                username = owner._session_store.validate(session_id, guest_enabled)
+                if (
+                    username is not None
+                    and username.casefold() != str(guest_username).casefold()
+                    and not owner._auth_config.is_user_enabled(username)
+                ):
+                    owner._session_store.invalidate(session_id)
+                    return None
+                return username
 
             def _require_auth(self):
                 """Prüft die Authentifizierung. Gibt False zurück, wenn abgewiesen."""
@@ -372,8 +420,20 @@ class WebPlayerServer:
 
                 if p == "/":
                     self._html(_PLAYER_HTML)
+                elif p == "/admin":
+                    self._html(web_admin.page_html(user_page=True))
                 elif p == "/api/stations":
-                    self._json({"stations": owner.store.list_stations()})
+                    self._json({"stations": self._current_store().list_stations()})
+                elif p == "/api/metadata":
+                    self._metadata(parsed.query)
+                elif p == "/admin/api/stations":
+                    self._admin_stations()
+                elif p == "/admin/api/search":
+                    self._admin_search(parsed.query)
+                elif p == "/admin/api/login-status":
+                    self._login_status()
+                elif p.startswith("/admin/assets/"):
+                    self._serve_admin_asset(urllib.parse.unquote(p[len("/admin/assets/"):]))
                 elif p.startswith("/logos/"):
                     self._serve_logo(urllib.parse.unquote(p[7:]))
                 elif p == "/api/slideshow/init":
@@ -403,13 +463,17 @@ class WebPlayerServer:
                 if not self._require_auth():
                     return
 
-                if parsed.path in ("/api/logout", "/api/shutdown") and not self._require_csrf():
-                    return
+                csrf_paths = ("/api/logout", "/api/shutdown")
+                if parsed.path in csrf_paths or parsed.path.startswith("/admin/api/"):
+                    if not self._require_csrf():
+                        return
 
                 if parsed.path == "/api/logout":
                     self._handle_logout()
                 elif parsed.path == "/api/shutdown":
                     self._json({"ok": True, "message": "Shutdown angefordert."})
+                elif parsed.path.startswith("/admin/api/"):
+                    self._admin_mutation(parsed.path, self._read_form())
                 else:
                     self.send_error(404)
 
@@ -446,27 +510,8 @@ class WebPlayerServer:
                 # Ein frischer CSRF-Token wird erst nach erfolgreicher Anmeldung
                 # für geschützte Aktionen ausgegeben.
 
-                # Konfiguration laden
-                config = owner._auth_config.load()
-                guest_enabled = config.get("guest_enabled", True)
-                guest_username = config.get("guest_username", "GAST")
-                salt = config.get("password_salt", "")
-                pw_hash = config.get("password_hash", "")
-
-                # Gastzugang muss aktiviert sein
-                if not guest_enabled:
-                    owner._rate_limiter.record_failure(client_ip)
-                    self._json_error(403, "Anmeldung nicht möglich.")
-                    return
-
-                # Benutzername case-insensitive
-                if username.upper() != guest_username.upper():
-                    owner._rate_limiter.record_failure(client_ip)
-                    self._json_error(401, "Benutzername oder Passwort ist falsch.")
-                    return
-
-                # Passwortprüfung
-                if not web_auth.verify_password(password, salt, pw_hash):
+                authenticated_user = owner._auth_config.authenticate(username, password)
+                if authenticated_user is None:
                     blocked = owner._rate_limiter.record_failure(client_ip)
                     if blocked:
                         self._json_error(429, "Zu viele fehlgeschlagene Versuche. Bitte warten Sie.")
@@ -478,7 +523,7 @@ class WebPlayerServer:
                 owner._rate_limiter.record_success(client_ip)
 
                 # Neue Session erstellen (Session-Fixation-Verhinderung)
-                session_id = owner._session_store.create(username)
+                session_id = owner._session_store.create(authenticated_user)
 
                 csrf_token = web_auth.generate_csrf_token()
                 secure_cookie = self._is_https()
@@ -488,7 +533,7 @@ class WebPlayerServer:
                 web_auth.set_csrf_cookie(self, csrf_token, secure=secure_cookie)
                 self.end_headers()
                 self.wfile.write(json.dumps({"ok": True}).encode("utf-8"))
-                LOGGER.info("Anmeldung erfolgreich: %s von %s", username, client_ip)
+                LOGGER.info("Anmeldung erfolgreich: %s von %s", authenticated_user, client_ip)
 
             def _handle_logout(self):
                 if not owner._auth_enabled or not web_auth:
@@ -512,7 +557,137 @@ class WebPlayerServer:
                 self.end_headers()
                 self.wfile.write(json.dumps({"ok": False, "message": message}).encode("utf-8"))
 
-            # ── Helfer ───────────────────────────────────────────────
+            # ── Helfer ────────────────────────────────────────────────
+
+            def _current_store(self, writable=False):
+                username = self._get_current_user()
+                config = owner._auth_config.load()
+                guest_username = config.get("guest_username", "GAST")
+                return owner.user_stores.for_user(
+                    username, guest_username=guest_username, writable=writable
+                )
+
+            def _metadata(self, query_string):
+                station_id = urllib.parse.parse_qs(query_string).get("id", [""])[0]
+                station = next(
+                    (item for item in self._current_store().list_stations() if item.get("id") == station_id),
+                    None,
+                )
+                if station is None:
+                    self._json({"ok": False, "error": "Sender nicht gefunden."}, status=404)
+                    return
+                metadata_url = station.get("metadata_url") or station.get("audio_url") or ""
+                try:
+                    title = _fetch_icy_title(metadata_url)
+                except (OSError, ValueError, urllib.error.URLError) as error:
+                    LOGGER.debug("Metadaten konnten nicht geladen werden: %s", error)
+                    title = ""
+                self._json({"ok": True, "title": title})
+
+            def _admin_stations(self):
+                payload = []
+                for station in self._current_store().list_stations():
+                    logo_file = station.get("logo_file", "")
+                    logo_url = ""
+                    if logo_file:
+                        try:
+                            version = (owner.base_dir / logo_file).resolve().stat().st_mtime_ns
+                            logo_url = "/admin/assets/{}?v={}".format(
+                                urllib.parse.quote(logo_file, safe="/"), version
+                            )
+                        except OSError:
+                            pass
+                    payload.append({
+                        "id": station["id"],
+                        "name": station["name"],
+                        "key": normalize_station_name(station["name"]),
+                        "logo_url": logo_url,
+                        "startup": bool(station.get("startup")),
+                    })
+                self._json({"ok": True, "stations": payload})
+
+            def _admin_search(self, query_string):
+                query = urllib.parse.parse_qs(query_string).get("q", [""])[0]
+                try:
+                    self._json({"ok": True, "results": search_logical_stations(query)})
+                except Exception as error:
+                    LOGGER.warning("Sendersuche fehlgeschlagen: %s", error)
+                    self._json({"ok": False, "error": web_admin.SEARCH_ERROR}, status=503)
+
+            def _admin_mutation(self, path, form):
+                previous_store = self._current_store()
+                store = self._current_store(writable=True)
+                personal_created = store is not previous_store
+                try:
+                    if path == "/admin/api/add":
+                        station = build_station(
+                            form.get("query", [""])[0], form.get("key", [""])[0],
+                            owner.logo_dir, owner.base_dir,
+                        )
+                        store.add_station(station)
+                        message = "Sender hinzugefügt."
+                    elif path == "/admin/api/add-manual":
+                        name = form.get("name", [""])[0].strip()
+                        audio_url = form.get("audio_url", [""])[0].strip()
+                        metadata_url = form.get("metadata_url", [""])[0].strip() or audio_url
+                        logo_url = form.get("logo_url", [""])[0].strip()
+                        if not name:
+                            raise ValueError("Bitte einen Sendernamen eingeben.")
+                        for label, url in (("Stream-URL", audio_url), ("Metadaten-URL", metadata_url)):
+                            parsed_url = urllib.parse.urlsplit(url)
+                            if parsed_url.scheme not in ("http", "https") or not parsed_url.netloc:
+                                raise ValueError(label + " ist keine gültige HTTP-/HTTPS-Adresse.")
+                        if logo_url:
+                            parsed_logo = urllib.parse.urlsplit(logo_url)
+                            if parsed_logo.scheme not in ("http", "https") or not parsed_logo.netloc:
+                                raise ValueError("Die Logo-URL ist ungültig.")
+                        logo_file = select_and_cache_logo(
+                            name, [{"favicon": logo_url}] if logo_url else [],
+                            owner.logo_dir, owner.base_dir,
+                        )
+                        store.add_station({
+                            "id": stable_station_id(name, "manual"), "name": name,
+                            "audio_url": audio_url, "metadata_url": metadata_url,
+                            "logo_file": logo_file, "source": "manual",
+                        })
+                        message = "Sender manuell hinzugefügt."
+                    elif path == "/admin/api/startup":
+                        store.set_startup_station(form.get("id", [""])[0])
+                        message = "Startsender gespeichert."
+                    elif path == "/admin/api/delete":
+                        store.delete_station(form.get("id", [""])[0])
+                        message = "Sender gelöscht."
+                    elif path == "/admin/api/move":
+                        store.move_station(
+                            form.get("id", [""])[0], form.get("direction", [""])[0]
+                        )
+                        message = "Reihenfolge gespeichert."
+                    else:
+                        self.send_error(404)
+                        return
+                    owner.on_change()
+                    self._json({
+                        "ok": True, "message": message,
+                        "personal_created": personal_created,
+                    })
+                except ValueError as error:
+                    self._json({"ok": False, "error": str(error)}, status=400)
+                except Exception as error:
+                    LOGGER.exception("Persönliche Senderverwaltung fehlgeschlagen: %s", error)
+                    self._json({"ok": False, "error": web_admin.ACTION_ERROR}, status=500)
+
+            def _serve_admin_asset(self, relative_name):
+                try:
+                    requested = (owner.base_dir / relative_name).resolve()
+                    requested.relative_to(owner.logo_dir.resolve())
+                    if not requested.is_file():
+                        raise FileNotFoundError
+                    data = requested.read_bytes()
+                except (OSError, ValueError):
+                    self.send_error(404)
+                    return
+                content_type = mimetypes.guess_type(str(requested))[0] or "application/octet-stream"
+                self._img(data, content_type)
 
             def _html(self, data):
                 self.send_response(200)

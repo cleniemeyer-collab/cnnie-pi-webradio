@@ -271,3 +271,144 @@ class StationStore:
                 temporary.unlink()
             except FileNotFoundError:
                 pass
+
+
+def _safe_user_dir_name(username: str) -> str:
+    """Erzeugt einen sicheren Dateinamen aus dem Benutzernamen.
+
+    Verwendet SHA-256 des casefolded Benutzernamens, um Pfad-Injection
+    zu verhindern und case-insensitive Zuordnung zu garantieren.
+    """
+    digest = hashlib.sha256(username.casefold().encode("utf-8")).hexdigest()[:16]
+    return f"usr_{digest}"
+
+
+class UserStationStores:
+    """Verwaltet persistente Sender-Listen pro Benutzer.
+
+    Jeder konfigurierter Benutzer erhält einen eigenen StationStore unter
+    user_stations/<hash>/, während der Gast die globale guest_store nutzt.
+
+    • guest_store:  Die ursprüngliche StationStore-Instanz (Gast/Standard).
+    • base_dir:     Projekt-Basisverzeichnis (für user_stations/ Unterordner).
+    • logo_dir:     Logo-Verzeichnis (wird an private Stores weitergegeben).
+
+    for_user() gibt entweder die guest_store (für Gäste), eine persistente
+    private Store (für bestehende Benutzer), oder einen schreibgeschützten
+    Fallback auf die guest_store (für nicht-existente Benutzer ohne writable).
+    """
+
+    def __init__(self, guest_store: StationStore, base_dir: Path, logo_dir: Path):
+        self._guest_store = guest_store
+        self._base_dir = Path(base_dir)
+        self._logo_dir = Path(logo_dir)
+        self._user_dir = self._base_dir / "user_stations"
+        self._stores: dict[str, StationStore] = {}
+        self._lock = threading.RLock()
+
+    def for_user(self, username: str, guest_username: str = "GAST",
+                 writable: bool = False) -> StationStore:
+        """Gibt den passenden StationStore für den Benutzer zurück.
+
+        • Ist der Benutzer ein Gast → guest_store.
+        • Existiert ein persistenter Store → wird (ggf. neu) geladen.
+        • writable=True und kein Store → Kopiert die guest-Liste und
+          gibt einen privaten Store zurück.
+        • Sonst → guest_store als schreibgeschützter Fallback.
+        """
+        if not username:
+            return self._guest_store
+
+        # Gast-Erkennung (case-insensitive)
+        if username.casefold() == guest_username.casefold():
+            return self._guest_store
+
+        safe_name = _safe_user_dir_name(username)
+        user_data_dir = self._user_dir / safe_name
+        user_json = user_data_dir / "stations.json"
+        user_csv = user_data_dir / "stations.csv"
+
+        with self._lock:
+            # Cached Store zurückgeben
+            cached = self._stores.get(safe_name)
+            if cached is not None:
+                return cached
+
+            # Persistenter Store vorhanden?
+            if user_json.is_file():
+                store = StationStore(user_json, user_csv, self._logo_dir)
+                self._stores[safe_name] = store
+                return store
+
+            # Schreibmodus: Kopiere Gast-Liste als Startpunkt
+            if writable:
+                return self._create_private_store(safe_name, user_json, user_csv)
+
+            # Kein privater Store und nicht schreibbar → Gast-Fallback
+            return self._guest_store
+
+    def _create_private_store(self, safe_name: str, user_json: Path,
+                              user_csv: Path) -> StationStore:
+        """Erstellt einen privaten Store durch Kopieren der Gast-Liste.
+
+        Muss innerhalb von self._lock aufgerufen werden.
+        """
+        user_data_dir = user_json.parent
+        user_data_dir.mkdir(parents=True, exist_ok=True)
+
+        # Sichere Kopie der Gast-Stationen
+        guest_stations = self._guest_store.list_stations()
+        document = {"version": 1, "stations": guest_stations}
+
+        temporary = user_json.with_suffix(user_json.suffix + ".tmp")
+        try:
+            with temporary.open("w", encoding="utf-8", newline="\n") as f:
+                json.dump(document, f, ensure_ascii=False, indent=2)
+                f.write("\n")
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(str(temporary), str(user_json))
+        finally:
+            try:
+                temporary.unlink()
+            except FileNotFoundError:
+                pass
+
+        store = StationStore(user_json, user_csv, self._logo_dir)
+        self._stores[safe_name] = store
+        return store
+
+    def reload(self, username: str, guest_username: str = "GAST") -> StationStore:
+        """Lädt den Store eines Benutzers neu von der Festplatte.
+
+        Nützlich für Multi-Process-Szenarien, in denen ein anderer
+        Prozess die Datei aktualisiert hat.
+        """
+        if not username or username.casefold() == guest_username.casefold():
+            return self._guest_store
+
+        safe_name = _safe_user_dir_name(username)
+        user_data_dir = self._user_dir / safe_name
+        user_json = user_data_dir / "stations.json"
+        user_csv = user_data_dir / "stations.csv"
+
+        if not user_json.is_file():
+            return self._guest_store
+
+        with self._lock:
+            store = StationStore(user_json, user_csv, self._logo_dir)
+            self._stores[safe_name] = store
+            return store
+
+    def clear_cache(self, username: str = None):
+        """Entfernt den(c) gecachten Store(n) aus dem Speicher.
+
+        Ohne Argument werden alle Benutzer-Store-Caches gelöscht.
+        """
+        if username is None:
+            with self._lock:
+                self._stores.clear()
+        else:
+            safe_name = _safe_user_dir_name(username)
+            with self._lock:
+                self._stores.pop(safe_name, None)

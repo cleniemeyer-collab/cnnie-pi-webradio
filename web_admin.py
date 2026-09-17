@@ -63,7 +63,268 @@ button.danger { background: #b6323b; } button.order { min-width: 56px; font-size
 }
 """
 
-PAGE_TEMPLATE = """<!doctype html><html lang="de"><head><meta charset="utf-8">
+USER_SCRIPT = r"""
+let loginStatus=null;
+function setMessage(text,isError=false){
+  message.textContent=text; message.classList.toggle('hidden',!text);
+  message.classList.toggle('error',Boolean(text)&&isError);
+}
+function placeholder(name){
+  const tile=document.createElement('div'); tile.className='logo placeholder';
+  tile.textContent=name.split(/\s+/).filter(Boolean).slice(0,3).map(word=>word[0]).join('').toUpperCase()||'RADIO';
+  return tile;
+}
+function logo(source,name){
+  if(!source)return placeholder(name); const image=document.createElement('img');
+  image.className='logo'; image.alt=''; image.src=source;
+  image.addEventListener('error',()=>image.replaceWith(placeholder(name)),{once:true}); return image;
+}
+function cardBase(item){
+  const card=document.createElement('article'); card.className='card';
+  card.append(logo(item.logo_url||item.favicon||'',item.name));
+  const name=document.createElement('div'); name.className='name'; name.textContent=item.name; card.append(name); return card;
+}
+async function requestJson(url,options={}){
+  if(!loginStatus){try{loginStatus=await fetch('__PREFIX__/api/login-status').then(r=>r.json());}catch(_){loginStatus={};}}
+  if(options.method==='POST'&&loginStatus.csrf_token){
+    options.headers=Object.assign({},options.headers,{'X-CSRF-Token':loginStatus.csrf_token});
+  }
+  const response=await fetch(url,Object.assign({cache:'no-store'},options));
+  if(response.redirected||response.status===302){window.location.href=response.url;throw new Error('Redirect');}
+  let data={}; try{data=await response.json();}catch(_){}
+  if(!response.ok||data.ok===false)throw new Error(data.error||'__ACTION_ERROR__'); return data;
+}
+function actionButton(text,className,disabled,handler){
+  const button=document.createElement('button'); button.type='button'; button.textContent=text;
+  button.className=className; button.disabled=disabled; button.addEventListener('click',()=>handler(button)); return button;
+}
+function renderStations(stations){
+  existingKeys=new Set(stations.map(station=>station.key)); const fragment=document.createDocumentFragment();
+  existingLogos=new Map(stations.map(station=>[station.key,station.logo_url||'']));
+  stations.forEach((station,index)=>{
+    const card=cardBase(station), actions=document.createElement('div'); actions.className='actions';
+    const up=actionButton('↑','order',index===0,b=>mutate(b,'__PREFIX__/api/move',{id:station.id,direction:'up'}));
+    up.setAttribute('aria-label','Nach oben');
+    const down=actionButton('↓','order',index===stations.length-1,b=>mutate(b,'__PREFIX__/api/move',{id:station.id,direction:'down'}));
+    down.setAttribute('aria-label','Nach unten');
+    const startup=actionButton(station.startup?"Startsender ✓":"Als Startsender","",station.startup,
+      b=>mutate(b,"__PREFIX__/api/startup",{id:station.id}));
+    const remove=actionButton('Löschen','danger',stations.length<=1,b=>{
+      if(window.confirm('Sender wirklich löschen?'))mutate(b,'__PREFIX__/api/delete',{id:station.id});
+    });
+    actions.append(up,down,startup,remove); card.append(actions); fragment.append(card);
+  });
+  stationList.replaceChildren(fragment); if(latestResults.length)renderSearchResults(latestResults);
+}
+function renderSearchResults(results){
+  latestResults=results; const fragment=document.createDocumentFragment();
+  if(!results.length){const empty=document.createElement('p');empty.textContent='Keine passenden Sender gefunden.';fragment.append(empty);}
+  results.forEach(result=>{
+    const present=existingKeys.has(result.key), shown=Object.assign({},result);
+    if(present&&existingLogos.get(result.key))shown.logo_url=existingLogos.get(result.key);
+    const card=cardBase(shown);
+    const add=actionButton(present?'Bereits vorhanden':'Hinzufügen','',present,
+      b=>mutate(b,'__PREFIX__/api/add',{query:currentQuery,key:result.key},true));
+    card.append(add); fragment.append(card); fragment.append(card);
+  });
+  searchResults.replaceChildren(fragment); searchSection.classList.remove('hidden');
+}
+async function refreshStations(showErrors=false){
+  try{const data=await requestJson('__PREFIX__/api/stations');renderStations(data.stations);}
+  catch(error){if(showErrors)throw error;}
+}
+async function runSearch(query){
+  currentQuery=query.trim(); if(!currentQuery)return;
+  radioDeLink.href="https://www.radio.de/search?query="+encodeURIComponent(currentQuery);
+  searchButton.disabled=true; searchInput.disabled=true; searchButton.textContent='Suche …';
+  try{const data=await requestJson('__PREFIX__/api/search?q='+encodeURIComponent(currentQuery));
+      await refreshStations(false);renderSearchResults(data.results);setMessage('');}
+  catch(_){setMessage('__SEARCH_ERROR__',true);}
+  finally{searchButton.disabled=false;searchInput.disabled=false;searchButton.textContent='Suchen';}
+}
+async function mutate(button,path,values,refreshSearch=false){
+  button.disabled=true;
+  try{
+    const body=new URLSearchParams(values);
+    const data=await requestJson(path,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded;charset=UTF-8'},body:body.toString()});
+    await refreshStations(true); if(refreshSearch&&currentQuery)await runSearch(currentQuery);
+    setMessage(data.message||'Änderung gespeichert.');
+    if(data.personal_created&&!personalNotified){
+      setMessage('Persönliche Kopie erstellt. Änderungen werden lokal gespeichert.',false);
+      personalNotified=true;
+    }
+  }catch(error){if(error.message!=='Redirect')setMessage(error.message||'__ACTION_ERROR__',true);}
+  finally{button.disabled=false;}
+}
+let currentQuery='', latestResults=[], existingKeys=new Set(), existingLogos=new Map(), personalNotified=false;
+const searchInput=document.getElementById('searchInput'), searchButton=document.getElementById('searchButton');
+const searchSection=document.getElementById('searchSection'), searchResults=document.getElementById('searchResults');
+const stationList=document.getElementById('stationList');
+const manualForm=document.getElementById("manualForm"), manualButton=document.getElementById("manualButton");
+const radioDeLink=document.getElementById("radioDeLink");
+searchForm.addEventListener('submit',event=>{event.preventDefault();runSearch(searchInput.value);});
+manualForm.addEventListener("submit",async event=>{
+  event.preventDefault(); manualButton.disabled=true;
+  try{
+    const body=new URLSearchParams(new FormData(manualForm));
+    const data=await requestJson("__PREFIX__/api/add-manual",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded;charset=UTF-8"},body:body.toString()});
+    manualForm.reset(); await refreshStations(true); setMessage(data.message||"Sender gespeichert.");
+    if(data.personal_created&&!personalNotified){
+      setMessage('Persönliche Kopie erstellt. Änderungen werden lokal gespeichert.',false);
+      personalNotified=true;
+    }
+  }catch(error){if(error.message!=='Redirect')setMessage(error.message||"__ACTION_ERROR__",true);}
+  finally{manualButton.disabled=false;}
+});
+requestJson('__PREFIX__/api/login-status').then(data=>{
+  document.getElementById('user-info').textContent=data.username ? 'Angemeldet als '+data.username : '';
+});
+refreshStations(true).catch(()=>setMessage('__ACTION_ERROR__',true));
+"""
+
+ADMIN_SCRIPT = r"""
+const searchInput=document.getElementById('searchInput'), searchButton=document.getElementById('searchButton');
+const searchSection=document.getElementById('searchSection'), searchResults=document.getElementById('searchResults');
+const stationList=document.getElementById('stationList');
+const manualForm=document.getElementById("manualForm"), manualButton=document.getElementById("manualButton");
+const radioDeLink=document.getElementById("radioDeLink");
+const guestStatus=document.getElementById("guestStatus"), guestToggle=document.getElementById("guestToggle");
+const guestNewPw=document.getElementById("guestNewPw"), guestConfirmPw=document.getElementById("guestConfirmPw");
+const guestChangePw=document.getElementById("guestChangePw"), guestWarning=document.getElementById("guestWarning");
+let currentQuery='', latestResults=[], existingKeys=new Set(), existingLogos=new Map(), guestEnabled=true;
+
+function setMessage(text,isError=false){
+  message.textContent=text; message.classList.toggle('hidden',!text);
+  message.classList.toggle('error',Boolean(text)&&isError);
+}
+function placeholder(name){
+  const tile=document.createElement('div'); tile.className='logo placeholder';
+  tile.textContent=name.split(/\s+/).filter(Boolean).slice(0,3).map(word=>word[0]).join('').toUpperCase()||'RADIO';
+  return tile;
+}
+function logo(source,name){
+  if(!source)return placeholder(name); const image=document.createElement('img');
+  image.className='logo'; image.alt=''; image.src=source;
+  image.addEventListener('error',()=>image.replaceWith(placeholder(name)),{once:true}); return image;
+}
+function cardBase(item){
+  const card=document.createElement('article'); card.className='card';
+  card.append(logo(item.logo_url||item.favicon||'',item.name));
+  const name=document.createElement('div'); name.className='name'; name.textContent=item.name; card.append(name); return card;
+}
+async function requestJson(url,options={}){
+  const response=await fetch(url,Object.assign({cache:'no-store'},options)); let data={};
+  try{data=await response.json();}catch(_){ }
+  if(!response.ok||data.ok===false)throw new Error(data.error||'__ACTION_ERROR__'); return data;
+}
+function actionButton(text,className,disabled,handler){
+  const button=document.createElement('button'); button.type='button'; button.textContent=text;
+  button.className=className; button.disabled=disabled; button.addEventListener('click',()=>handler(button)); return button;
+}
+function renderStations(stations){
+  existingKeys=new Set(stations.map(station=>station.key)); const fragment=document.createDocumentFragment();
+  existingLogos=new Map(stations.map(station=>[station.key,station.logo_url||'']));
+  stations.forEach((station,index)=>{
+    const card=cardBase(station), actions=document.createElement('div'); actions.className='actions';
+    const up=actionButton('↑','order',index===0,b=>mutate(b,'__PREFIX__/api/move',{id:station.id,direction:'up'}));
+    up.setAttribute('aria-label','Nach oben');
+    const down=actionButton('↓','order',index===stations.length-1,b=>mutate(b,'__PREFIX__/api/move',{id:station.id,direction:'down'}));
+    down.setAttribute('aria-label','Nach unten');
+    const startup=actionButton(station.startup?"Startsender ✓":"Als Startsender","",station.startup,
+      b=>mutate(b,"__PREFIX__/api/startup",{id:station.id}));
+    const remove=actionButton('Löschen','danger',stations.length<=1,b=>{
+      if(window.confirm('Sender wirklich löschen?'))mutate(b,'__PREFIX__/api/delete',{id:station.id});
+    });
+    actions.append(up,down,startup,remove); card.append(actions); fragment.append(card);
+  });
+  stationList.replaceChildren(fragment); if(latestResults.length)renderSearchResults(latestResults);
+}
+function renderSearchResults(results){
+  latestResults=results; const fragment=document.createDocumentFragment();
+  if(!results.length){const empty=document.createElement('p');empty.textContent='Keine passenden Sender gefunden.';fragment.append(empty);}
+  results.forEach(result=>{
+    const present=existingKeys.has(result.key), shown=Object.assign({},result);
+    if(present&&existingLogos.get(result.key))shown.logo_url=existingLogos.get(result.key);
+    const card=cardBase(shown);
+    const add=actionButton(present?'Bereits vorhanden':'Hinzufügen','',present,
+      b=>mutate(b,'__PREFIX__/api/add',{query:currentQuery,key:result.key},true));
+    card.append(add); fragment.append(card); fragment.append(card);
+  });
+  searchResults.replaceChildren(fragment); searchSection.classList.remove('hidden');
+}
+async function refreshStations(showErrors=false){
+  try{const data=await requestJson('__PREFIX__/api/stations');renderStations(data.stations);}
+  catch(error){if(showErrors)throw error;}
+}
+async function runSearch(query){
+  currentQuery=query.trim(); if(!currentQuery)return;
+  radioDeLink.href="https://www.radio.de/search?query="+encodeURIComponent(currentQuery);
+  searchButton.disabled=true; searchInput.disabled=true; searchButton.textContent='Suche …';
+  try{const data=await requestJson('__PREFIX__/api/search?q='+encodeURIComponent(currentQuery));
+      await refreshStations(false);renderSearchResults(data.results);setMessage('');}
+  catch(_){setMessage('__SEARCH_ERROR__',true);}
+  finally{searchButton.disabled=false;searchInput.disabled=false;searchButton.textContent='Suchen';}
+}
+async function mutate(button,path,values,refreshSearch=false){
+  button.disabled=true;
+  try{
+    const body=new URLSearchParams(values);
+    const data=await requestJson(path,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded;charset=UTF-8'},body:body.toString()});
+    await refreshStations(true); if(refreshSearch&&currentQuery)await runSearch(currentQuery);
+    setMessage(data.message||'Änderung gespeichert.');
+  }catch(error){setMessage(error.message||'__ACTION_ERROR__',true);}
+  finally{button.disabled=false;}
+}
+async function refreshGuestStatus(){
+  try{
+    const data=await requestJson('__PREFIX__/api/web-auth');
+    guestEnabled=Boolean(data.guest_enabled);
+    guestStatus.textContent=guestEnabled?'Gastzugang aktiviert':'Gastzugang deaktiviert';
+    guestStatus.className='guest-status '+(guestEnabled?'active':'inactive');
+    guestToggle.textContent=guestEnabled?'Deaktivieren':'Aktivieren';
+    guestWarning.classList.toggle('hidden',!data.default_password);
+  }catch(error){
+    guestSection.classList.add('hidden');
+    console.warn('Web-Player-Zugang nicht verfügbar:',error);
+  }
+}
+guestToggle.addEventListener('click',async()=>{
+  guestToggle.disabled=true;
+  try{
+    const body=new URLSearchParams({enabled:String(!guestEnabled)});
+    const data=await requestJson('__PREFIX__/api/web-auth/toggle',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded;charset=UTF-8'},body:body.toString()});
+    setMessage(data.message||'Gastzugang aktualisiert.'); await refreshGuestStatus();
+  }catch(error){setMessage(error.message,true);}
+  finally{guestToggle.disabled=false;}
+});
+guestChangePw.addEventListener('click',async()=>{
+  const password=guestNewPw.value, confirmation=guestConfirmPw.value;
+  if(password.length<4){setMessage('Das neue Passwort muss mindestens vier Zeichen lang sein.',true);return;}
+  if(password!==confirmation){setMessage('Die Passwörter stimmen nicht überein.',true);return;}
+  guestChangePw.disabled=true;
+  try{
+    const body=new URLSearchParams({password,confirmation});
+    const data=await requestJson('__PREFIX__/api/web-auth/password',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded;charset=UTF-8'},body:body.toString()});
+    guestNewPw.value='';guestConfirmPw.value='';setMessage(data.message||'Passwort geändert.');await refreshGuestStatus();
+  }catch(error){setMessage(error.message,true);}
+  finally{guestChangePw.disabled=false;}
+});
+searchForm.addEventListener('submit',event=>{event.preventDefault();runSearch(searchInput.value);});
+manualForm.addEventListener("submit",async event=>{
+  event.preventDefault(); manualButton.disabled=true;
+  try{
+    const body=new URLSearchParams(new FormData(manualForm));
+    const data=await requestJson("__PREFIX__/api/add-manual",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded;charset=UTF-8"},body:body.toString()});
+    manualForm.reset(); await refreshStations(true); setMessage(data.message||"Sender gespeichert.");
+  }catch(error){setMessage(error.message||"__ACTION_ERROR__",true);}
+  finally{manualButton.disabled=false;}
+});
+refreshStations(true).catch(()=>setMessage('__ACTION_ERROR__',true));
+refreshGuestStatus();
+window.setInterval(()=>refreshStations(false),5000);
+"""
+
+PAGE_TEMPLATE_ADMIN = """<!doctype html><html lang="de"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Webradio-Sender</title><style>__STYLE__</style></head><body><main>
 <h1>Webradio-Sender verwalten</h1>
@@ -91,154 +352,47 @@ PAGE_TEMPLATE = """<!doctype html><html lang="de"><head><meta charset="utf-8">
 <input id="guestConfirmPw" type="password" placeholder="Passwort wiederholen" autocomplete="new-password">
 <button id="guestChangePw" class="guest-btn" type="button">Passwort ändern</button>
 </div>
-	<p id="guestWarning" class="guest-warning hidden">⚠ Das initiale Passwort „gast“ ist noch aktiv und sollte für einen öffentlichen Zugang geändert werden.</p>
+	<p id="guestWarning" class="guest-warning hidden">⚠ Das initiale Passwort „gast" ist noch aktiv und sollte für einen öffentlichen Zugang geändert werden.</p>
 	<p class="hint">Diese Einstellungen können nur aus einem privaten Netzwerk geändert werden.</p>
 	</section>
-	<script>
-	const searchInput=document.getElementById('searchInput'), searchButton=document.getElementById('searchButton');
-const searchSection=document.getElementById('searchSection'), searchResults=document.getElementById('searchResults');
-const stationList=document.getElementById('stationList');
-const manualForm=document.getElementById("manualForm"), manualButton=document.getElementById("manualButton");
-const radioDeLink=document.getElementById("radioDeLink");
-const guestStatus=document.getElementById("guestStatus"), guestToggle=document.getElementById("guestToggle");
-const guestNewPw=document.getElementById("guestNewPw"), guestConfirmPw=document.getElementById("guestConfirmPw");
-const guestChangePw=document.getElementById("guestChangePw"), guestWarning=document.getElementById("guestWarning");
-let currentQuery='', latestResults=[], existingKeys=new Set(), existingLogos=new Map(), guestEnabled=true;
+	<script>__SCRIPT__</script></main></body></html>"""
 
-function setMessage(text,isError=false){
-  message.textContent=text; message.classList.toggle('hidden',!text);
-  message.classList.toggle('error',Boolean(text)&&isError);
-}
-function placeholder(name){
-  const tile=document.createElement('div'); tile.className='logo placeholder';
-  tile.textContent=name.split(/\\s+/).filter(Boolean).slice(0,3).map(word=>word[0]).join('').toUpperCase()||'RADIO';
-  return tile;
-}
-function logo(source,name){
-  if(!source)return placeholder(name); const image=document.createElement('img');
-  image.className='logo'; image.alt=''; image.src=source;
-  image.addEventListener('error',()=>image.replaceWith(placeholder(name)),{once:true}); return image;
-}
-function cardBase(item){
-  const card=document.createElement('article'); card.className='card';
-  card.append(logo(item.logo_url||item.favicon||'',item.name));
-  const name=document.createElement('div'); name.className='name'; name.textContent=item.name; card.append(name); return card;
-}
-async function requestJson(url,options={}){
-  const response=await fetch(url,Object.assign({cache:'no-store'},options)); let data={};
-  try{data=await response.json();}catch(_){ }
-  if(!response.ok||data.ok===false)throw new Error(data.error||'__ACTION_ERROR__'); return data;
-}
-function actionButton(text,className,disabled,handler){
-  const button=document.createElement('button'); button.type='button'; button.textContent=text;
-  button.className=className; button.disabled=disabled; button.addEventListener('click',()=>handler(button)); return button;
-}
-function renderStations(stations){
-  existingKeys=new Set(stations.map(station=>station.key)); const fragment=document.createDocumentFragment();
-  existingLogos=new Map(stations.map(station=>[station.key,station.logo_url||'']));
-  stations.forEach((station,index)=>{
-    const card=cardBase(station), actions=document.createElement('div'); actions.className='actions';
-    const up=actionButton('↑','order',index===0,b=>mutate(b,'/api/move',{id:station.id,direction:'up'}));
-    up.setAttribute('aria-label','Nach oben');
-    const down=actionButton('↓','order',index===stations.length-1,b=>mutate(b,'/api/move',{id:station.id,direction:'down'}));
-    down.setAttribute('aria-label','Nach unten');
-    const startup=actionButton(station.startup?"Startsender ✓":"Als Startsender","",station.startup,
-      b=>mutate(b,"/api/startup",{id:station.id}));
-    const remove=actionButton('Löschen','danger',stations.length<=1,b=>{
-      if(window.confirm('Sender wirklich löschen?'))mutate(b,'/api/delete',{id:station.id});
-    });
-    actions.append(up,down,startup,remove); card.append(actions); fragment.append(card);
-  });
-  stationList.replaceChildren(fragment); if(latestResults.length)renderSearchResults(latestResults);
-}
-function renderSearchResults(results){
-  latestResults=results; const fragment=document.createDocumentFragment();
-  if(!results.length){const empty=document.createElement('p');empty.textContent='Keine passenden Sender gefunden.';fragment.append(empty);}
-  results.forEach(result=>{
-    const present=existingKeys.has(result.key), shown=Object.assign({},result);
-    if(present&&existingLogos.get(result.key))shown.logo_url=existingLogos.get(result.key);
-    const card=cardBase(shown);
-    const add=actionButton(present?'Bereits vorhanden':'Hinzufügen','',present,
-      b=>mutate(b,'/api/add',{query:currentQuery,key:result.key},true));
-    card.append(add); fragment.append(card);
-  });
-  searchResults.replaceChildren(fragment); searchSection.classList.remove('hidden');
-}
-async function refreshStations(showErrors=false){
-  try{const data=await requestJson('/api/stations');renderStations(data.stations);}
-  catch(error){if(showErrors)throw error;}
-}
-async function runSearch(query){
-  currentQuery=query.trim(); if(!currentQuery)return;
-  radioDeLink.href="https://www.radio.de/search?query="+encodeURIComponent(currentQuery);
-  searchButton.disabled=true; searchInput.disabled=true; searchButton.textContent='Suche …';
-  try{const data=await requestJson('/api/search?q='+encodeURIComponent(currentQuery));
-      await refreshStations(false);renderSearchResults(data.results);setMessage('');}
-  catch(_){setMessage('__SEARCH_ERROR__',true);}
-  finally{searchButton.disabled=false;searchInput.disabled=false;searchButton.textContent='Suchen';}
-}
-async function mutate(button,path,values,refreshSearch=false){
-  button.disabled=true;
-  try{
-    const body=new URLSearchParams(values);
-    const data=await requestJson(path,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded;charset=UTF-8'},body:body.toString()});
-    await refreshStations(true); if(refreshSearch&&currentQuery)await runSearch(currentQuery);
-    setMessage(data.message||'Änderung gespeichert.');
-  }catch(error){setMessage(error.message||'__ACTION_ERROR__',true);}
-  finally{button.disabled=false;}
-}
-async function refreshGuestStatus(){
-  try{
-    const data=await requestJson('/api/web-auth');
-    guestEnabled=Boolean(data.guest_enabled);
-    guestStatus.textContent=guestEnabled?'Gastzugang aktiviert':'Gastzugang deaktiviert';
-    guestStatus.className='guest-status '+(guestEnabled?'active':'inactive');
-    guestToggle.textContent=guestEnabled?'Deaktivieren':'Aktivieren';
-    guestWarning.classList.toggle('hidden',!data.default_password);
-  }catch(error){
-    guestSection.classList.add('hidden');
-    console.warn('Web-Player-Zugang nicht verfügbar:',error);
-  }
-}
-guestToggle.addEventListener('click',async()=>{
-  guestToggle.disabled=true;
-  try{
-    const body=new URLSearchParams({enabled:String(!guestEnabled)});
-    const data=await requestJson('/api/web-auth/toggle',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded;charset=UTF-8'},body:body.toString()});
-    setMessage(data.message||'Gastzugang aktualisiert.'); await refreshGuestStatus();
-  }catch(error){setMessage(error.message,true);}
-  finally{guestToggle.disabled=false;}
-});
-guestChangePw.addEventListener('click',async()=>{
-  const password=guestNewPw.value, confirmation=guestConfirmPw.value;
-  if(password.length<4){setMessage('Das neue Passwort muss mindestens vier Zeichen lang sein.',true);return;}
-  if(password!==confirmation){setMessage('Die Passwörter stimmen nicht überein.',true);return;}
-  guestChangePw.disabled=true;
-  try{
-    const body=new URLSearchParams({password,confirmation});
-    const data=await requestJson('/api/web-auth/password',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded;charset=UTF-8'},body:body.toString()});
-    guestNewPw.value='';guestConfirmPw.value='';setMessage(data.message||'Passwort geändert.');await refreshGuestStatus();
-  }catch(error){setMessage(error.message,true);}
-  finally{guestChangePw.disabled=false;}
-});
-searchForm.addEventListener('submit',event=>{event.preventDefault();runSearch(searchInput.value);});
-manualForm.addEventListener("submit",async event=>{
-  event.preventDefault(); manualButton.disabled=true;
-  try{
-    const body=new URLSearchParams(new FormData(manualForm));
-    const data=await requestJson("/api/add-manual",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded;charset=UTF-8"},body:body.toString()});
-    manualForm.reset(); await refreshStations(true); setMessage(data.message||"Sender gespeichert.");
-  }catch(error){setMessage(error.message||"__ACTION_ERROR__",true);}
-  finally{manualButton.disabled=false;}
-});
-refreshStations(true).catch(()=>setMessage('__ACTION_ERROR__',true));
-refreshGuestStatus();
-window.setInterval(()=>refreshStations(false),5000);
-</script></body></html>"""
+PAGE_TEMPLATE_USER = """<!doctype html><html lang="de"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Webradio-Sender</title><style>__STYLE__</style></head><body><main>
+<h1>Webradio-Sender</h1>
+<p><a href="/">Zurück zum Web-Player</a></p>
+<p id="user-info" class="hint"></p>
+<p id="message" class="message hidden" role="status"></p>
+<form class="search" id="searchForm">
+<input id="searchInput" placeholder="Sender suchen" aria-label="Sender suchen" required autofocus>
+<button id="searchButton" type="submit">Suchen</button></form>
+<p class="hint">Weltweite Suche. Falls ein Sender fehlt: <a id="radioDeLink" href="https://www.radio.de/" target="_blank" rel="noopener">bei radio.de suchen</a> und unten manuell eintragen.</p>
+<section id="searchSection" class="hidden"><h2>Suchergebnisse</h2><div id="searchResults"></div></section>
+<section><h2>Sender manuell hinzufügen</h2><form class="manual" id="manualForm">
+<input name="name" placeholder="Sendername" required>
+<input name="audio_url" type="url" placeholder="Stream-URL (http/https)" required>
+<input name="metadata_url" type="url" placeholder="Metadaten-URL (optional)">
+<input name="logo_url" type="url" placeholder="Logo-URL (optional)">
+<button id="manualButton" type="submit">Manuell speichern</button></form></section>
+<section><h2>Gespeicherte Sender</h2><div id="stationList"></div></section>
+<script>__SCRIPT__</script></main></body></html>"""
 
 
-def page_html():
-    return (PAGE_TEMPLATE.replace("__STYLE__", PAGE_STYLE)
+def page_html(user_page=False):
+    """Generate admin page HTML.
+
+    Args:
+        user_page: When True, omit guest section, use CSRF-aware requests,
+                   show login info, and prefix paths with /admin.
+    """
+    is_user = bool(user_page)
+    script = USER_SCRIPT if is_user else ADMIN_SCRIPT
+    template = PAGE_TEMPLATE_USER if is_user else PAGE_TEMPLATE_ADMIN
+    prefix = "/admin" if is_user else ""
+    return (template.replace("__STYLE__", PAGE_STYLE)
+            .replace("__SCRIPT__", script)
+            .replace("__PREFIX__", prefix)
             .replace("__SEARCH_ERROR__", SEARCH_ERROR)
             .replace("__ACTION_ERROR__", ACTION_ERROR).encode("utf-8"))
 
@@ -267,28 +421,68 @@ class RadioAdminServer:
         if thread is not None and thread.is_alive():
             thread.join(timeout=2)
 
-    def _handler_class(self):
+    def _handler_class(self, store_resolver=None, change_callback=None, user_page=False):
+        """Factory returning an HTTP handler class.
+
+        Args:
+            store_resolver: Optional callable(handler, writable) -> store.
+                When provided, Handler.get_store() delegates to it.
+            change_callback: Optional callable(handler).
+                When provided, Handler.changed() delegates to it.
+            user_page: When True, serve a user-facing page without guest
+                controls, deny mutations (404), deny /api/web-auth (404),
+                and skip resolve_missing_logos side-effects.
+        """
         owner = self
 
         class Handler(BaseHTTPRequestHandler):
+            # --- store / change helpers ---
+
+            def get_store(self, writable=False):
+                if store_resolver is not None:
+                    return store_resolver(self, writable)
+                return owner.store
+
+            def changed(self):
+                if change_callback is not None:
+                    change_callback(self)
+                else:
+                    owner.on_change()
+
+            # --- routing ---
+
             def do_GET(self):
                 parsed = urllib.parse.urlsplit(self.path)
                 query = urllib.parse.parse_qs(parsed.query)
-                if parsed.path == "/": self.send_html(page_html())
-                elif parsed.path == "/api/stations": self.send_json({"ok": True, "stations": self.station_payload()})
-                elif parsed.path == "/api/search": self.api_search(query.get("q", [""])[0])
-                elif parsed.path == "/api/web-auth": self.api_auth_status()
+                if parsed.path == "/":
+                    self.send_html(page_html(user_page=user_page))
+                elif parsed.path == "/api/stations":
+                    self.send_json({"ok": True, "stations": self.station_payload()})
+                elif parsed.path == "/api/search":
+                    self.api_search(query.get("q", [""])[0])
+                elif parsed.path == "/api/login-status":
+                    self.api_login_status()
+                elif parsed.path == "/api/web-auth":
+                    if user_page:
+                        self.send_error(404)
+                    else:
+                        self.api_auth_status()
                 elif parsed.path.startswith("/assets/"):
                     self.serve_asset(urllib.parse.unquote(parsed.path[len("/assets/"):]))
-                else: self.send_error(404)
+                else:
+                    self.send_error(404)
 
             def do_POST(self):
                 parsed, form = urllib.parse.urlsplit(self.path), self.read_form()
+                if user_page:
+                    self.send_error(404)
+                    return
                 try:
                     if parsed.path == "/api/add":
                         station = build_station(form.get("query", [""])[0], form.get("key", [""])[0],
                                                 owner.logo_dir, owner.base_dir)
-                        owner.store.add_station(station); owner.on_change()
+                        self.get_store(writable=True).add_station(station)
+                        self.changed()
                         self.send_json({"ok": True, "message": "Sender hinzugefügt."})
                     elif parsed.path == "/api/add-manual":
                         name = form.get("name", [""])[0].strip()
@@ -311,7 +505,7 @@ class RadioAdminServer:
                             owner.logo_dir,
                             owner.base_dir,
                         )
-                        owner.store.add_station({
+                        self.get_store(writable=True).add_station({
                             "id": stable_station_id(name, "manual"),
                             "name": name,
                             "audio_url": audio_url,
@@ -319,23 +513,26 @@ class RadioAdminServer:
                             "logo_file": logo_file,
                             "source": "manual",
                         })
-                        owner.on_change()
+                        self.changed()
                         self.send_json({"ok": True, "message": "Sender manuell hinzugefügt."})
                     elif parsed.path == "/api/startup":
-                        owner.store.set_startup_station(form.get("id", [""])[0])
-                        owner.on_change()
+                        self.get_store(writable=True).set_startup_station(form.get("id", [""])[0])
+                        self.changed()
                         self.send_json({"ok": True, "message": "Startsender gespeichert."})
                     elif parsed.path == "/api/delete":
-                        owner.store.delete_station(form.get("id", [""])[0]); owner.on_change()
+                        self.get_store(writable=True).delete_station(form.get("id", [""])[0])
+                        self.changed()
                         self.send_json({"ok": True, "message": "Sender gelöscht."})
                     elif parsed.path == "/api/move":
-                        owner.store.move_station(form.get("id", [""])[0], form.get("direction", [""])[0]); owner.on_change()
+                        self.get_store(writable=True).move_station(form.get("id", [""])[0], form.get("direction", [""])[0])
+                        self.changed()
                         self.send_json({"ok": True, "message": "Reihenfolge gespeichert."})
                     elif parsed.path == "/api/web-auth/toggle":
                         self.api_auth_toggle(form)
                     elif parsed.path == "/api/web-auth/password":
                         self.api_auth_password(form)
-                    else: self.send_error(404)
+                    else:
+                        self.send_error(404)
                 except RadioBrowserUnavailable:
                     self.send_json({"ok": False, "error": SEARCH_ERROR}, status=503)
                 except ValueError as error:
@@ -343,6 +540,12 @@ class RadioAdminServer:
                 except Exception as error:
                     LOGGER.exception("Webradio administration request failed: %r", error)
                     self.send_json({"ok": False, "error": ACTION_ERROR}, status=500)
+
+            # --- auth endpoints ---
+
+            def api_login_status(self):
+                """Return login status. Overridable by main server for auth + CSRF."""
+                self.send_json({"ok": True, "authenticated": True})
 
             def require_local_auth_admin(self):
                 try:
@@ -393,10 +596,13 @@ class RadioAdminServer:
                 owner.auth_config.change_password(password)
                 self.send_json({"ok": True, "message": "Gastpasswort geändert."})
 
+            # --- search / stations ---
+
             def api_search(self, query):
                 try:
                     results = search_logical_stations(query)
-                    self.resolve_missing_logos(results)
+                    if not user_page:
+                        self.resolve_missing_logos(results)
                     self.send_json({"ok": True, "results": results})
                 except RadioBrowserUnavailable:
                     self.send_json({"ok": False, "error": SEARCH_ERROR}, status=503)
@@ -405,9 +611,10 @@ class RadioAdminServer:
                     self.send_json({"ok": False, "error": SEARCH_ERROR}, status=503)
 
             def resolve_missing_logos(self, results):
+                store = self.get_store(writable=True)
                 existing = {
                     normalize_station_name(station["name"]): station
-                    for station in owner.store.list_stations()
+                    for station in store.list_stations()
                     if not station.get("logo_file")
                 }
                 changed = False
@@ -419,16 +626,16 @@ class RadioAdminServer:
                         logo_file = select_and_cache_logo(
                             station["name"], [], owner.logo_dir, owner.base_dir
                         )
-                        if logo_file and owner.store.update_logo(station["id"], logo_file):
+                        if logo_file and store.update_logo(station["id"], logo_file):
                             changed = True
                     except Exception as error:
                         LOGGER.warning("Existing station logo resolution failed: %r", error)
                 if changed:
-                    owner.on_change()
+                    self.changed()
 
             def station_payload(self):
                 payload = []
-                for station in owner.store.list_stations():
+                for station in self.get_store().list_stations():
                     logo_url, logo_file = "", station.get("logo_file", "")
                     if logo_file:
                         try:
@@ -439,6 +646,8 @@ class RadioAdminServer:
                                     "key": normalize_station_name(station["name"]), "logo_url": logo_url,
                                     "startup": bool(station.get("startup"))})
                 return payload
+
+            # --- utilities ---
 
             def read_form(self):
                 try: length = min(int(self.headers.get("Content-Length", "0")), 16384)

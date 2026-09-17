@@ -1,5 +1,6 @@
 immich_config.json
 web_auth_config.json
+user_stations/
 .web_auth_*.tmp
 __pycache__/
 *.py[cod]

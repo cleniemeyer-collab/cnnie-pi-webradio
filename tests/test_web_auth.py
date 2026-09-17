@@ -12,7 +12,18 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 import web_auth
-from web_player_server import WebPlayerServer
+from web_player_server import WebPlayerServer, _parse_icy_title
+
+
+class IcyMetadataTests(unittest.TestCase):
+    def test_extracts_stream_title(self):
+        metadata = b"StreamTitle='Artist - Titel';StreamUrl='';" + b"\0" * 8
+        self.assertEqual("Artist - Titel", _parse_icy_title(metadata))
+
+    def test_rejects_empty_or_url_title(self):
+        self.assertEqual("", _parse_icy_title(b"StreamTitle='';"))
+        self.assertEqual("", _parse_icy_title(b"StreamTitle='https://example.org/live';"))
+        self.assertEqual("", _parse_icy_title(b"StreamUrl='';"))
 
 
 class AuthConfigTests(unittest.TestCase):
@@ -218,6 +229,57 @@ class WebPlayerServerAuthIntegrationTests(unittest.TestCase):
         response = self.connection.getresponse()
         response.read()
         self.assertEqual(303, response.status)
+
+    def test_user_can_manage_and_load_personal_stations(self):
+        self.server._auth_config.add_user("alice", "geheim")
+        form = urllib.parse.urlencode({"username": "Alice", "password": "geheim"})
+        self.connection.request(
+            "POST", "/api/login", body=form,
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+        )
+        response = self.connection.getresponse()
+        response.read()
+        self.assertEqual(200, response.status)
+        cookie_values = [
+            value.split(";", 1)[0]
+            for name, value in response.getheaders()
+            if name.lower() == "set-cookie"
+        ]
+        session_cookie = next(value for value in cookie_values if value.startswith("SID="))
+        csrf_cookie = next(value for value in cookie_values if value.startswith("CSRF="))
+        csrf_token = csrf_cookie.split("=", 1)[1]
+        cookies = session_cookie + "; " + csrf_cookie
+
+        self.connection.request("GET", "/admin", headers={"Cookie": cookies})
+        response = self.connection.getresponse()
+        admin_html = response.read().decode("utf-8")
+        self.assertEqual(200, response.status)
+        self.assertIn("Webradio-Sender", admin_html)
+
+        station_form = urllib.parse.urlencode({
+            "name": "Alice Radio",
+            "audio_url": "https://example.com/alice.mp3",
+            "metadata_url": "https://example.com/alice.mp3",
+        })
+        with mock.patch("web_player_server.select_and_cache_logo", return_value=""):
+            self.connection.request(
+                "POST", "/admin/api/add-manual", body=station_form,
+                headers={
+                    "Cookie": cookies,
+                    "X-CSRF-Token": csrf_token,
+                    "Content-Type": "application/x-www-form-urlencoded",
+                },
+            )
+            response = self.connection.getresponse()
+        result = json.loads(response.read().decode("utf-8"))
+        self.assertEqual(200, response.status)
+        self.assertTrue(result["personal_created"])
+
+        self.connection.request("GET", "/api/stations", headers={"Cookie": cookies})
+        response = self.connection.getresponse()
+        stations = json.loads(response.read().decode("utf-8"))["stations"]
+        self.assertEqual(200, response.status)
+        self.assertEqual(["Alice Radio"], [station["name"] for station in stations])
 
 
 if __name__ == "__main__":
