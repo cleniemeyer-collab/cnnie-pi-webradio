@@ -18,7 +18,7 @@ import musicpd
 
 gi.require_version("Gst", "1.0")
 from gi.repository import Gst
-from PyQt5.QtCore import QEvent, QSize, Qt, QThread, QTimer, QUrl, pyqtSignal
+from PyQt5.QtCore import QEvent, QRect, QSize, Qt, QThread, QTimer, QUrl, pyqtSignal
 from PyQt5.QtGui import QColor, QDesktopServices, QFont, QIcon, QPainter, QPixmap
 from PyQt5.QtWidgets import (
     QApplication,
@@ -30,6 +30,9 @@ from PyQt5.QtWidgets import (
     QAbstractButton,
     QPushButton,
     QSizePolicy,
+    QStyle,
+    QStyleOptionToolButton,
+    QStylePainter,
     QToolButton,
     QVBoxLayout,
     QWidget,
@@ -422,6 +425,27 @@ class CarouselWidget(QWidget):
         return super().eventFilter(watched, event)
 
 
+class CompactStationButton(QToolButton):
+    def paintEvent(self, _event):
+        painter = QStylePainter(self)
+        option = QStyleOptionToolButton()
+        self.initStyleOption(option)
+        icon = self.icon()
+        text = self.text()
+        option.icon = QIcon()
+        option.text = ""
+        painter.drawComplexControl(QStyle.CC_ToolButton, option)
+
+        icon_rect = QRect((self.width() - 100) // 2, 10, 100, 100)
+        if not icon.isNull():
+            icon.paint(painter, icon_rect, Qt.AlignCenter)
+
+        text_rect = QRect(5, 120, max(0, self.width() - 10), max(0, self.height() - 130))
+        painter.setPen(self.palette().buttonText().color())
+        painter.setFont(self.font())
+        painter.drawText(text_rect, Qt.AlignHCenter | Qt.AlignVCenter | Qt.TextWordWrap, text)
+
+
 class DarkOverlay(QWidget):
     activated = pyqtSignal()
 
@@ -541,24 +565,36 @@ class RadioWindow(QWidget):
 
     def build_ui(self):
         self.setWindowTitle("Webradio")
-        self.setMinimumSize(760, 560)
+        screen_size = QApplication.primaryScreen().availableGeometry().size()
+        self.compact_layout = screen_size.width() <= 640 or screen_size.height() <= 480
+        self.setMinimumSize(320, 240) if self.compact_layout else self.setMinimumSize(760, 560)
         self.setWindowFlags(Qt.Window | Qt.FramelessWindowHint)
         self.setAttribute(Qt.WA_StyledBackground, True)
 
         root = QVBoxLayout(self)
-        root.setContentsMargins(20, 18, 20, 18)
-        root.setSpacing(16)
+        if self.compact_layout:
+            root.setContentsMargins(6, 5, 6, 5)
+            root.setSpacing(5)
+        else:
+            root.setContentsMargins(20, 18, 20, 18)
+            root.setSpacing(16)
 
         now_card = QFrame()
         now_card.setObjectName("nowCard")
+        if self.compact_layout:
+            now_card.setFixedHeight(38)
         now_layout = QHBoxLayout(now_card)
-        now_layout.setContentsMargins(18, 14, 18, 14)
-        now_layout.setSpacing(22)
+        if self.compact_layout:
+            now_layout.setContentsMargins(6, 4, 6, 4)
+            now_layout.setSpacing(8)
+        else:
+            now_layout.setContentsMargins(18, 14, 18, 14)
+            now_layout.setSpacing(22)
 
         self.now_logo = QLabel()
         self.now_logo.setObjectName("logoTile")
         self.now_logo.setAlignment(Qt.AlignCenter)
-        self.now_logo.setFixedSize(220, 145)
+        self.now_logo.setFixedSize(48, 28) if self.compact_layout else self.now_logo.setFixedSize(220, 145)
         now_layout.addWidget(self.now_logo)
 
         now_text = QVBoxLayout()
@@ -568,7 +604,13 @@ class RadioWindow(QWidget):
         self.now_station.setObjectName("nowStation")
         self.track_info = QLabel("Titelinformationen werden geladen …")
         self.track_info.setObjectName("trackInfo")
-        self.track_info.setWordWrap(True)
+        self.track_info.setWordWrap(not self.compact_layout)
+        self.track_info.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        if self.compact_layout:
+            self.track_info.setStyleSheet(
+                "font-family: 'DejaVu Sans'; font-size: 12px; "
+                "font-weight: normal; padding: 0px;"
+            )
         caption.hide()
         self.now_station.hide()
         now_text.addWidget(self.track_info, 1)
@@ -585,37 +627,49 @@ class RadioWindow(QWidget):
 
         self.previous_button = QPushButton("‹")
         self.previous_button.setObjectName("carouselNavigation")
-        self.previous_button.setMinimumSize(70, 100)
-        self.previous_button.setMaximumWidth(76)
+        if self.compact_layout:
+            self.previous_button.setFixedWidth(32)
+            self.previous_button.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding)
+        else:
+            self.previous_button.setMinimumSize(70, 100)
+            self.previous_button.setMaximumWidth(76)
         self.previous_button.clicked.connect(lambda: self.browse(-1))
         self.carousel.watch(self.previous_button)
         chooser.addWidget(self.previous_button)
 
         self.station_buttons = []
         for offset in (-2, -1, 0, 1, 2):
-            button = QToolButton()
+            button = CompactStationButton() if self.compact_layout else QToolButton()
             button.setText("–")
             button.setToolButtonStyle(Qt.ToolButtonTextUnderIcon)
             button.setProperty("carouselOffset", offset)
-            button.setObjectName("stationCenter" if offset == 0 else "stationPreview")
+            button.setObjectName("stationCard" if self.compact_layout else ("stationCenter" if offset == 0 else "stationPreview"))
             button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
             button.clicked.connect(lambda checked=False, step=offset: self.select_carousel_station(step))
             self.carousel.watch(button)
-            stretch = 4 if offset == 0 else (2 if abs(offset) == 1 else 1)
+            if self.compact_layout and abs(offset) == 2:
+                button.hide()
+                continue
+            stretch = 1 if self.compact_layout else (4 if offset == 0 else (2 if abs(offset) == 1 else 1))
             chooser.addWidget(button, stretch)
             self.station_buttons.append(button)
 
         self.next_button = QPushButton("›")
         self.next_button.setObjectName("carouselNavigation")
-        self.next_button.setMinimumSize(70, 100)
-        self.next_button.setMaximumWidth(76)
+        if self.compact_layout:
+            self.next_button.setFixedWidth(32)
+            self.next_button.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding)
+        else:
+            self.next_button.setMinimumSize(70, 100)
+            self.next_button.setMaximumWidth(76)
         self.next_button.clicked.connect(lambda: self.browse(1))
         self.carousel.watch(self.next_button)
         chooser.addWidget(self.next_button)
         root.addWidget(self.carousel, 1)
 
         controls = QGridLayout()
-        controls.setHorizontalSpacing(16)
+        controls.setHorizontalSpacing(5 if self.compact_layout else 16)
+        controls.setVerticalSpacing(4 if self.compact_layout else 0)
         self.power_button = QPushButton("Aus")
         self.power_button.setObjectName("powerButton")
         self.power_button.clicked.connect(self.confirm_shutdown)
@@ -628,7 +682,6 @@ class RadioWindow(QWidget):
 
         self.mode_button = QPushButton("Quelle:\nRadio")
         self.mode_button.setObjectName("modeButton")
-        self.mode_button.setCheckable(True)
         self.mode_button.clicked.connect(self.toggle_mode)
         controls.addWidget(self.mode_button, 0, 2)
 
@@ -641,6 +694,15 @@ class RadioWindow(QWidget):
         self.stations_button.setObjectName("stationsButton")
         self.stations_button.clicked.connect(self.open_station_selection)
         controls.addWidget(self.stations_button, 0, 4)
+        if self.compact_layout:
+            for control_button in (
+                self.power_button,
+                self.dark_button,
+                self.mode_button,
+                self.slideshow_button,
+                self.stations_button,
+            ):
+                control_button.setFixedHeight(44)
         for column in range(5):
             controls.setColumnStretch(column, 1)
         root.addLayout(controls)
@@ -665,19 +727,19 @@ class RadioWindow(QWidget):
         self.slideshow_location.hide()
         self.slideshow_previous = QPushButton("‹", self.slideshow_overlay)
         self.slideshow_previous.setObjectName("slideshowNavigation")
-        self.slideshow_previous.setFixedSize(88, 150)
+        self.slideshow_previous.setFixedSize(48, 100) if self.compact_layout else self.slideshow_previous.setFixedSize(88, 150)
         self.slideshow_previous.clicked.connect(lambda: self.navigate_slideshow(-1))
         self.slideshow_next = QPushButton("›", self.slideshow_overlay)
         self.slideshow_next.setObjectName("slideshowNavigation")
-        self.slideshow_next.setFixedSize(88, 150)
+        self.slideshow_next.setFixedSize(48, 100) if self.compact_layout else self.slideshow_next.setFixedSize(88, 150)
         self.slideshow_next.clicked.connect(lambda: self.navigate_slideshow(1))
         self.slideshow_pause = QPushButton("⏸", self.slideshow_overlay)
         self.slideshow_pause.setObjectName("slideshowControl")
-        self.slideshow_pause.setFixedSize(64, 64)
+        self.slideshow_pause.setFixedSize(44, 44) if self.compact_layout else self.slideshow_pause.setFixedSize(64, 64)
         self.slideshow_pause.clicked.connect(self.toggle_slideshow_pause)
         self.slideshow_close = QPushButton("×", self.slideshow_overlay)
         self.slideshow_close.setObjectName("slideshowControl")
-        self.slideshow_close.setFixedSize(64, 64)
+        self.slideshow_close.setFixedSize(44, 44) if self.compact_layout else self.slideshow_close.setFixedSize(64, 64)
         self.slideshow_close.clicked.connect(self.stop_slideshow)
         self.slideshow_overlay.hide()
 
@@ -822,6 +884,34 @@ class RadioWindow(QWidget):
             QPushButton#slideshowControl:pressed { background: rgba(58, 76, 100, 210); }
             QWidget#darkOverlay { background: #000000; }
         """)
+        if self.compact_layout:
+            self.setStyleSheet(self.styleSheet() + """
+                QFrame#nowCard { border-radius: 8px; }
+                QLabel#logoTile { border-radius: 6px; font-size: 11px; padding: 1px; }
+                QLabel#trackInfo { font-size: 12px; font-weight: normal; }
+                QToolButton#stationCard, QToolButton#stationCenter, QToolButton#stationPreview {
+                    background: #263348; border: none; border-radius: 7px;
+                    color: #d9e7f7; font-size: 9px; font-weight: bold;
+                    min-height: 0px; max-height: 16777215px; padding: 3px 1px;
+                }
+                QToolButton#stationCard:pressed, QToolButton#stationCenter:pressed,
+                QToolButton#stationPreview:pressed { background: #36506f; }
+                QPushButton#carouselNavigation {
+                    border-radius: 10px; font-size: 26px;
+                    min-height: 0px; max-height: 16777215px;
+                }
+                QPushButton#powerButton, QPushButton#darkButton,
+                QPushButton#modeButton, QPushButton#slideshowButton,
+                QPushButton#stationsButton {
+                    border-radius: 9px; font-size: 10px; min-height: 44px; max-height: 44px;
+                }
+                QLabel#slideshowDate, QLabel#slideshowLocation { font-size: 14px; padding: 3px 5px; }
+                QPushButton#slideshowNavigation { border-radius: 18px; font-size: 42px; }
+                QPushButton#slideshowControl {
+                    border-radius: 12px; font-size: 24px;
+                    min-width: 44px; max-width: 44px; min-height: 44px; max-height: 44px;
+                }
+            """)
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -964,8 +1054,8 @@ class RadioWindow(QWidget):
         if overlay_width <= 0 or overlay_height <= 0:
             return
 
-        edge_margin = 18
-        control_size = 64
+        edge_margin = 8 if self.compact_layout else 18
+        control_size = self.slideshow_pause.width()
 
         pause_x = max(0, min(
             (overlay_width - control_size) // 2,
@@ -997,7 +1087,7 @@ class RadioWindow(QWidget):
         self.scale_slideshow_image()
 
         metadata_font = QFont("DejaVu Sans")
-        metadata_font.setPixelSize(21)
+        metadata_font.setPixelSize(14 if self.compact_layout else 21)
         metadata_font.setWeight(QFont.Normal)
 
         date_text = str(self.slideshow_metadata.get("date") or "").strip()
@@ -1007,7 +1097,9 @@ class RadioWindow(QWidget):
         self.slideshow_date.setWordWrap(False)
         self.slideshow_date.setText(date_text)
         if date_text:
-            self.slideshow_date.setGeometry(18, 18, 165, 48)
+            date_width = 125 if self.compact_layout else 165
+            date_height = 34 if self.compact_layout else 48
+            self.slideshow_date.setGeometry(edge_margin, edge_margin, date_width, date_height)
             self.slideshow_date.show()
         else:
             self.slideshow_date.hide()
@@ -1075,7 +1167,10 @@ class RadioWindow(QWidget):
             3: {-1, 0, 1},
             4: {-1, 0, 1, 2},
         }.get(station_count, {-2, -1, 0, 1, 2})
-        for button, offset in zip(self.station_buttons, (-2, -1, 0, 1, 2)):
+        if self.compact_layout:
+            visible_offsets &= {-1, 0, 1}
+        for button in self.station_buttons:
+            offset = int(button.property("carouselOffset"))
             # Bei weniger als fünf Sendern keine Station doppelt anzeigen.
             if offset not in visible_offsets:
                 button.setText("")
@@ -1086,7 +1181,7 @@ class RadioWindow(QWidget):
             name = self.stations[index][0]
             button.setEnabled(True)
             self.set_card_logo(button, name, offset)
-            if offset == 0:
+            if offset == 0 and not self.compact_layout:
                 symbol = "▶"
                 if self.mode == "radio" and index == self.playing_index and not self.radio_paused:
                     symbol = "❚❚"
@@ -1103,19 +1198,22 @@ class RadioWindow(QWidget):
             and self.playing_index is not None
         ):
             if self.radio_paused:
+                name, _url = self.stations[self.playing_index]
                 self.stream_started_at = time.monotonic()
                 self.last_audio_buffer_at = 0.0
                 self.player.set_state(Gst.State.PLAYING)
                 self.radio_paused = False
+                self.now_station.setText(name)
+                self.set_logo(name)
             else:
                 self.player.set_state(Gst.State.PAUSED)
                 self.radio_paused = True
             self.update_selection()
             return
-        if self.mode == "mpd":
-            self.stop_mpd()
+        if self.mode != "radio":
+            if self.mode == "mpd":
+                self.stop_mpd()
             self.mode = "radio"
-            self.mode_button.setChecked(False)
             self.mode_button.setText("Quelle:\nRadio")
 
         name, url = self.stations[self.selected_index]
@@ -1135,18 +1233,31 @@ class RadioWindow(QWidget):
         self.set_logo(name)
         self.update_selection()
 
-    def toggle_mode(self, use_mpd):
-        if use_mpd:
-            self.player.set_state(Gst.State.NULL)
-            self.mode = "mpd"
+    def toggle_mode(self):
+        next_mode = {
+            "radio": "mpd",
+            "mpd": "bluetooth",
+            "bluetooth": "radio",
+        }.get(self.mode, "radio")
+
+        if self.mode == "mpd":
+            self.stop_mpd()
+
+        self.player.set_state(Gst.State.NULL)
+        self.mode = next_mode
+
+        if next_mode == "mpd":
             self.mode_button.setText("Quelle:\nMPD")
             self.now_station.setText("MPD")
             self.track_info.setText("Wiedergabe über Music Player Daemon")
             self.set_logo("MPD")
             self.start_mpd()
+        elif next_mode == "bluetooth":
+            self.mode_button.setText("Quelle:\nBluetooth")
+            self.now_station.setText("Bluetooth")
+            self.track_info.setText("Bluetooth-Audio bereit – Wiedergabe am Gerät starten")
+            self.set_logo("Bluetooth")
         else:
-            self.stop_mpd()
-            self.mode = "radio"
             self.mode_button.setText("Quelle:\nRadio")
             if self.playing_index is not None:
                 self.selected_index = self.playing_index
@@ -1174,8 +1285,18 @@ class RadioWindow(QWidget):
         return True
 
     def start_mpd(self):
-        if not self.with_mpd(lambda client: client.play()):
+        queue_has_items = False
+
+        def play_queue(client):
+            nonlocal queue_has_items
+            queue_has_items = bool(client.playlistinfo())
+            if queue_has_items:
+                client.play()
+
+        if not self.with_mpd(play_queue):
             self.track_info.setText("MPD ist nicht erreichbar")
+        elif not queue_has_items:
+            self.track_info.setText("MPD bereit – Warteschlange leer")
 
     def stop_mpd(self):
         self.with_mpd(lambda client: client.stop())
@@ -1362,11 +1483,15 @@ class RadioWindow(QWidget):
             button.setIcon(QIcon())
             button.setIconSize(QSize(0, 0))
             return
-        logo_size = QSize(96, 76)
+        logo_size = QSize(100, 100) if self.compact_layout else QSize(96, 76)
         canvas = QPixmap(logo_size)
         canvas.fill(QColor("#f3f5f8"))
+        inset = 8 if self.compact_layout else 10
         scaled = pixmap.scaled(
-            86, 66, Qt.KeepAspectRatio, Qt.SmoothTransformation
+            logo_size.width() - inset,
+            logo_size.height() - inset,
+            Qt.KeepAspectRatio,
+            Qt.SmoothTransformation,
         )
         painter = QPainter(canvas)
         painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
@@ -1392,13 +1517,18 @@ class ShutdownDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("Ausschalten")
         self.setModal(True)
-        self.setFixedSize(620, 300)
+        self.compact_layout = parent is not None and parent.width() <= 640
+        self.setFixedSize(460, 280) if self.compact_layout else self.setFixedSize(620, 300)
         self.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint)
         self.setAttribute(Qt.WA_StyledBackground, True)
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(30, 28, 30, 28)
-        layout.setSpacing(28)
+        if self.compact_layout:
+            layout.setContentsMargins(14, 12, 14, 12)
+            layout.setSpacing(12)
+        else:
+            layout.setContentsMargins(30, 28, 30, 28)
+            layout.setSpacing(28)
 
         question = QLabel("Raspberry Pi wirklich ausschalten?")
         question.setObjectName("shutdownQuestion")
@@ -1410,7 +1540,7 @@ class ShutdownDialog(QDialog):
         buttons.setSpacing(24)
         cancel_button = QPushButton("Abbrechen")
         cancel_button.setObjectName("cancelShutdownButton")
-        cancel_button.setMinimumSize(220, 90)
+        cancel_button.setMinimumSize(180, 64) if self.compact_layout else cancel_button.setMinimumSize(220, 90)
         cancel_button.setDefault(True)
         cancel_button.setAutoDefault(True)
         cancel_button.clicked.connect(self.reject)
@@ -1418,7 +1548,7 @@ class ShutdownDialog(QDialog):
 
         shutdown_button = QPushButton("Ausschalten")
         shutdown_button.setObjectName("confirmShutdownButton")
-        shutdown_button.setMinimumSize(220, 90)
+        shutdown_button.setMinimumSize(180, 64) if self.compact_layout else shutdown_button.setMinimumSize(220, 90)
         shutdown_button.setAutoDefault(False)
         shutdown_button.clicked.connect(self.accept)
         buttons.addWidget(shutdown_button)
@@ -1458,9 +1588,14 @@ class ShutdownDialog(QDialog):
                 background: #c52f3c;
             }
             QPushButton#confirmShutdownButton:pressed {
-                background: #e04450;
+                background: #df4452;
             }
         """)
+        if self.compact_layout:
+            self.setStyleSheet(self.styleSheet() + """
+                QLabel#shutdownQuestion { font-size: 22px; }
+                QPushButton { border-radius: 12px; font-size: 18px; }
+            """)
         cancel_button.setFocus(Qt.OtherFocusReason)
 
 
