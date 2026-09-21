@@ -80,7 +80,7 @@ body{
 
 /* ── Controls ──────────────────────────────────────────────── */
 #controls{
-  display:grid;grid-template-columns:1fr 1fr 1.4fr 1fr 1.4fr;
+  display:grid;grid-template-columns:1fr 1fr 1fr 1.4fr;
   gap:16px;flex-shrink:0;
 }
 .ctrl-btn{
@@ -91,8 +91,6 @@ body{
 .ctrl-btn:active{filter:brightness(1.2)}
 #powerBtn{background:#b6323b}
 #darkBtn{background:#283242}
-#modeBtn{background:#1769aa;font-size:25px}
-#modeBtn.checked{background:#7656b5}
 #slideshowBtn{background:#287a58}
 #stationsBtn{background:#7656b5}
 
@@ -228,7 +226,6 @@ body{
   <div id="controls">
     <button class="ctrl-btn" id="powerBtn">Ausschalten</button>
     <button class="ctrl-btn" id="darkBtn">Dunkel</button>
-    <button class="ctrl-btn" id="modeBtn">Quelle: Webradio</button>
     <button class="ctrl-btn" id="slideshowBtn">Diashow</button>
     <button class="ctrl-btn" id="stationsBtn">Senderauswahl</button>
   </div>
@@ -289,7 +286,6 @@ let stations = [];
 let selectedIndex = 0;
 let playingIndex = null;
 let radioPaused = false;
-let mode = "radio";               // "radio" | "mpd"
 let audio = new Audio();
 audio.crossOrigin = "anonymous";
 
@@ -388,11 +384,11 @@ function setLogo(station){
 
 // ── Audio ───────────────────────────────────────────────────
 async function refreshMetadata(){
-  if(mode!=="radio" || radioPaused || playingIndex===null || !stations[playingIndex]) return;
+  if(radioPaused || playingIndex===null || !stations[playingIndex]) return;
   const stationId=stations[playingIndex].id;
   try{
     const data=await api("/api/metadata?id="+encodeURIComponent(stationId));
-    if(mode==="radio" && !radioPaused && playingIndex!==null && stations[playingIndex]?.id===stationId){
+    if(!radioPaused && playingIndex!==null && stations[playingIndex]?.id===stationId){
       trackInfo.textContent=data.title||"Wiedergabe läuft …";
     }
   }catch(e){
@@ -484,28 +480,6 @@ function browse(dir){
   selectedIndex = ((selectedIndex+dir)%stations.length+stations.length)%stations.length;
   nowStation.textContent = stations[selectedIndex].name;
   playStation(selectedIndex);
-}
-
-// ── Mode-Toggle (Radio / MPD-Info) ─────────────────────────
-// Der Web-Player spielt immer Web-Streams. Der MPD-Modus wird
-// hier nur als UI-Info angezeigt; die eigentliche MPD-Steuerung
-// läuft über den Admin-Server.
-function toggleMode(){
-  const btn = $("#modeBtn");
-  if(mode==="radio"){
-    mode="mpd";
-    btn.textContent="Quelle: MPD";
-    btn.classList.add("checked");
-    audio.pause();
-    trackInfo.textContent="MPD-Modus (Steuerung über Admin-Oberfläche)";
-    nowStation.textContent="MPD";
-    logoTile.innerHTML='<span class="letter">MP</span>';
-  } else {
-    mode="radio";
-    btn.textContent="Quelle: Webradio";
-    btn.classList.remove("checked");
-    if(stations.length) playStation(selectedIndex);
-  }
 }
 
 // ── Diashow ─────────────────────────────────────────────────
@@ -769,7 +743,6 @@ $("#prevBtn").addEventListener("click",()=>browse(-1));
 $("#nextBtn").addEventListener("click",()=>browse(1));
 $("#powerBtn").addEventListener("click", logout);
 $("#darkBtn").addEventListener("click", showDark);
-$("#modeBtn").addEventListener("click", toggleMode);
 $("#slideshowBtn").addEventListener("click", startSlideshow);
 $("#stationsBtn").addEventListener("click",()=>{window.location.href="/admin";});
 $("#darkOverlay").addEventListener("click", hideDark);

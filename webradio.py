@@ -625,18 +625,6 @@ class RadioWindow(QWidget):
         chooser.setContentsMargins(0, 0, 0, 0)
         chooser.setSpacing(8)
 
-        self.previous_button = QPushButton("‹")
-        self.previous_button.setObjectName("carouselNavigation")
-        if self.compact_layout:
-            self.previous_button.setFixedWidth(32)
-            self.previous_button.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding)
-        else:
-            self.previous_button.setMinimumSize(70, 100)
-            self.previous_button.setMaximumWidth(76)
-        self.previous_button.clicked.connect(lambda: self.browse(-1))
-        self.carousel.watch(self.previous_button)
-        chooser.addWidget(self.previous_button)
-
         self.station_buttons = []
         for offset in (-2, -1, 0, 1, 2):
             button = CompactStationButton() if self.compact_layout else QToolButton()
@@ -654,17 +642,6 @@ class RadioWindow(QWidget):
             chooser.addWidget(button, stretch)
             self.station_buttons.append(button)
 
-        self.next_button = QPushButton("›")
-        self.next_button.setObjectName("carouselNavigation")
-        if self.compact_layout:
-            self.next_button.setFixedWidth(32)
-            self.next_button.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding)
-        else:
-            self.next_button.setMinimumSize(70, 100)
-            self.next_button.setMaximumWidth(76)
-        self.next_button.clicked.connect(lambda: self.browse(1))
-        self.carousel.watch(self.next_button)
-        chooser.addWidget(self.next_button)
         root.addWidget(self.carousel, 1)
 
         controls = QGridLayout()
@@ -810,18 +787,6 @@ class RadioWindow(QWidget):
                 background: transparent;
                 border: none;
             }
-            QPushButton#carouselNavigation {
-                background: rgba(25, 32, 44, 215);
-                border: 1px solid #4b596c;
-                border-radius: 22px;
-                color: #ffffff;
-                font-size: 62px;
-                font-weight: bold;
-                padding: 0;
-            }
-            QPushButton#carouselNavigation:pressed {
-                background: rgba(58, 76, 100, 235);
-            }
             QPushButton#powerButton {
                 background: #b6323b;
                 font-size: 18px;
@@ -896,10 +861,6 @@ class RadioWindow(QWidget):
                 }
                 QToolButton#stationCard:pressed, QToolButton#stationCenter:pressed,
                 QToolButton#stationPreview:pressed { background: #36506f; }
-                QPushButton#carouselNavigation {
-                    border-radius: 10px; font-size: 26px;
-                    min-height: 0px; max-height: 16777215px;
-                }
                 QPushButton#powerButton, QPushButton#darkButton,
                 QPushButton#modeButton, QPushButton#slideshowButton,
                 QPushButton#stationsButton {
@@ -1152,10 +1113,9 @@ class RadioWindow(QWidget):
     def select_carousel_station(self, offset):
         if not self.stations:
             return
-        if offset == 0:
-            self.start_selected_station()
-            return
-        self.browse(offset)
+        if offset != 0:
+            self.selected_index = (self.selected_index + offset) % len(self.stations)
+        self.start_selected_station()
 
     def update_selection(self):
         if not self.stations:
