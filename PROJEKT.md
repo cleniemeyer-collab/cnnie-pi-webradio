@@ -62,6 +62,13 @@ Die Admin-Oberfläche verwaltet:
 - Startsender
 - Aktivierung oder Deaktivierung des Gastzugangs
 - Gastpasswort
+- persönliche Benutzer anlegen, sperren, aktivieren und löschen
+- jedem persönlichen Benutzer ein Immich-Album zuordnen
+
+Die verfügbaren Immich-Alben werden über den in `immich_config.json`
+konfigurierten API-Zugang geladen. Ohne persönliche Zuordnung verwendet die
+Diashow weiterhin das Album `WEB Radio`; der Gastzugang verwendet dieses Album
+immer.
 
 Die Auth-Einstellungen sind nur von privaten Client-Adressen oder localhost
 erreichbar. Die allgemeine Admin-Oberfläche besitzt derzeit noch keine eigene
@@ -72,7 +79,7 @@ werden.
 
 | Port | Dienst | Beschreibung |
 |---|---|---|
-| `8088` | Admin-Server | Sender- und Gastzugangsverwaltung |
+| `8088` | Admin-Server | Sender-, Benutzer- und Gastzugangsverwaltung |
 | `8089` | Web-Player | Login, Radio und Immich-Diashow |
 | `6600` | MPD | lokale MPD-Verbindung, sofern verwendet |
 

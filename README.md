@@ -9,7 +9,8 @@ Web-Senderverwaltung und Immich-Diashow.
 - Senderkarussell mit lokalen Logos
 - Webverwaltung auf Port 8088
 - Radio-Browser- und radio.de-Suche
-- Umschaltung zwischen Webradio und MPD
+- Umschaltung zwischen Webradio, MPD, LMS/Squeezelite und Bluetooth
+- LMS-Wiedergabe über den lokalen USB-DAC, gesteuert per Handy-App
 - Dunkelmodus
 - Immich-Diashow aus dem Album `WEB Radio`
 - automatischer Diashow-Start nach zwei Minuten Inaktivität
@@ -25,8 +26,12 @@ sudo apt update
 sudo apt install python3-pyqt5 python3-gi python3-musicpd \
   gir1.2-gstreamer-1.0 gstreamer1.0-tools \
   gstreamer1.0-plugins-base gstreamer1.0-plugins-good \
-  gstreamer1.0-plugins-bad gstreamer1.0-libav
+  gstreamer1.0-plugins-bad gstreamer1.0-libav squeezelite
 ```
+
+Für den LMS-Modus muss `squeezelite.service` auf den verwendeten USB-DAC und
+Lyrion Music Server konfiguriert sein. Beim Wechsel der Quelle startet und
+stoppt die Oberfläche diesen Dienst automatisch.
 
 Immich-Konfiguration anlegen:
 

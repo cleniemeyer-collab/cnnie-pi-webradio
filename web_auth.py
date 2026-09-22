@@ -218,6 +218,28 @@ class AuthConfig:
             self._save_locked(config)
             return True
 
+    def set_user_album(self, username: str, album_name: str) -> bool:
+        with self._lock:
+            config = self._load_unlocked()
+            users = config.setdefault("users", {})
+            key = next((key for key in users if key.casefold() == username.casefold()), None)
+            if key is None:
+                return False
+            users[key]["immich_album"] = str(album_name).strip()
+            self._save_locked(config)
+            return True
+
+    def album_for_user(self, username: str, default: str = "WEB Radio") -> str:
+        normalized = str(username or "").casefold()
+        config = self.load()
+        guest = str(config.get("guest_username", DEFAULT_GUEST_USERNAME))
+        if normalized == guest.casefold():
+            return default
+        for canonical_name, entry in config.get("users", {}).items():
+            if canonical_name.casefold() == normalized:
+                return str(entry.get("immich_album") or default).strip()
+        return default
+
 
 class SessionStore:
     def __init__(self, ttl_seconds: int = SESSION_TTL_SECONDS):

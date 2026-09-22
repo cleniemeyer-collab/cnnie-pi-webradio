@@ -12,6 +12,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 import web_auth
+from web_admin import RadioAdminServer
 from web_player_server import WebPlayerServer, _parse_icy_title
 
 
@@ -84,6 +85,13 @@ class AuthConfigTests(unittest.TestCase):
         self.assertTrue(self.config.toggle_guest(True)["guest_enabled"])
         self.assertTrue(self.config.load()["guest_enabled"])
 
+    def test_user_album_is_persisted_with_default_fallback(self):
+        self.config.add_user("Alice", "geheim")
+        self.assertEqual("WEB Radio", self.config.album_for_user("alice"))
+        self.assertTrue(self.config.set_user_album("ALICE", "Familie"))
+        self.assertEqual("Familie", self.config.album_for_user("Alice"))
+        self.assertEqual("WEB Radio", self.config.album_for_user("GAST"))
+
 
 class SessionStoreTests(unittest.TestCase):
     def test_session_expires_after_ttl(self):
@@ -148,6 +156,81 @@ class RateLimiterTests(unittest.TestCase):
 class _StoreStub:
     def list_stations(self):
         return []
+
+
+class RadioAdminUserIntegrationTests(unittest.TestCase):
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp_dir.cleanup)
+        base_dir = Path(self.temp_dir.name)
+        self.server = RadioAdminServer(
+            store=_StoreStub(), logo_dir=base_dir / "logos", base_dir=base_dir,
+            on_change=lambda: None, host="127.0.0.1", port=0,
+            auth_config_path=base_dir / "auth.json",
+        )
+        self.server.start()
+        self.addCleanup(self.server.stop)
+        self.connection = http.client.HTTPConnection(
+            "127.0.0.1", self.server.httpd.server_port, timeout=5
+        )
+        self.addCleanup(self.connection.close)
+
+    def post(self, path, values):
+        self.connection.request(
+            "POST", path, body=urllib.parse.urlencode(values),
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+        )
+        response = self.connection.getresponse()
+        return response, json.loads(response.read().decode("utf-8"))
+
+    def test_user_can_be_added_disabled_and_deleted(self):
+        response, payload = self.post(
+            "/api/web-auth/users/add",
+            {"username": "Alice", "password": "geheim", "album": "Alice Fotos"},
+        )
+        self.assertEqual(200, response.status)
+        self.assertTrue(payload["ok"])
+        self.assertEqual("Alice", self.server.auth_config.authenticate("alice", "geheim"))
+
+        self.connection.request("GET", "/api/web-auth")
+        response = self.connection.getresponse()
+        status = json.loads(response.read().decode("utf-8"))
+        self.assertEqual(
+            [{"username": "Alice", "enabled": True, "immich_album": "Alice Fotos"}],
+            status["users"],
+        )
+
+        response, _ = self.post(
+            "/api/web-auth/users/toggle", {"username": "alice", "enabled": "false"}
+        )
+        self.assertEqual(200, response.status)
+        self.assertIsNone(self.server.auth_config.authenticate("Alice", "geheim"))
+
+        response, _ = self.post(
+            "/api/web-auth/users/album", {"username": "alice", "album": "Urlaub"}
+        )
+        self.assertEqual(200, response.status)
+        self.assertEqual("Urlaub", self.server.auth_config.album_for_user("Alice"))
+
+        response, _ = self.post("/api/web-auth/users/delete", {"username": "ALICE"})
+        self.assertEqual(200, response.status)
+        self.assertEqual({}, self.server.auth_config.load()["users"])
+
+    def test_duplicate_and_guest_names_are_rejected(self):
+        response, _ = self.post(
+            "/api/web-auth/users/add",
+            {"username": "gast", "password": "geheim", "album": "WEB Radio"},
+        )
+        self.assertEqual(400, response.status)
+        self.post(
+            "/api/web-auth/users/add",
+            {"username": "Alice", "password": "geheim", "album": "WEB Radio"},
+        )
+        response, _ = self.post(
+            "/api/web-auth/users/add",
+            {"username": "alice", "password": "anders", "album": "WEB Radio"},
+        )
+        self.assertEqual(400, response.status)
 
 
 class WebPlayerServerAuthIntegrationTests(unittest.TestCase):

@@ -4,6 +4,7 @@ import logging
 import mimetypes
 import threading
 import urllib.parse
+import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -31,8 +32,8 @@ h1 { font-size: 2rem; margin: 8px 0 20px; } h2 { margin-top: 30px; }
 .manual { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 .manual button { grid-column: 1 / -1; }
 .hint { color: #c5ccda; }
-input, button { min-height: 52px; border: 0; border-radius: 13px; font-size: 1.05rem; }
-input { min-width: 0; flex: 1; padding: 0 15px; background: #fff; color: #111; }
+input, select, button { min-height: 52px; border: 0; border-radius: 13px; font-size: 1.05rem; }
+input, select { min-width: 0; flex: 1; padding: 0 15px; background: #fff; color: #111; }
 button { padding: 9px 17px; background: #1769aa; color: #fff; font-weight: bold; cursor: pointer; }
 button:disabled { background: #4a5260; color: #c6cad0; cursor: default; }
 button.danger { background: #b6323b; } button.order { min-width: 56px; font-size: 1.35rem; background: #334258; }
@@ -56,6 +57,10 @@ button.danger { background: #b6323b; } button.order { min-width: 56px; font-size
 .guest-btn { min-height: 44px; font-size: 1rem; padding: 6px 18px; }
 .guest-btn.toggle { background: #7656b5; }
 .guest-btn.toggle.disabled { background: #4a5260; }
+.user-list { display: grid; gap: 10px; margin-top: 14px; }
+.user-card { display: flex; align-items: center; gap: 10px; padding: 12px; background: #121925; border-radius: 12px; }
+.user-card .name { font-size: 1.05rem; }
+.user-card .guest-status { margin: 0; }
 @media (max-width: 600px) {
   main { padding: 12px; } h1 { font-size: 1.55rem; }
   .card { align-items: stretch; flex-wrap: wrap; } .name { align-self: center; font-size: 1.1rem; }
@@ -191,7 +196,9 @@ const radioDeLink=document.getElementById("radioDeLink");
 const guestStatus=document.getElementById("guestStatus"), guestToggle=document.getElementById("guestToggle");
 const guestNewPw=document.getElementById("guestNewPw"), guestConfirmPw=document.getElementById("guestConfirmPw");
 const guestChangePw=document.getElementById("guestChangePw"), guestWarning=document.getElementById("guestWarning");
-let currentQuery='', latestResults=[], existingKeys=new Set(), existingLogos=new Map(), guestEnabled=true;
+const userForm=document.getElementById('userForm'), userName=document.getElementById('userName');
+const userPassword=document.getElementById('userPassword'), userAlbum=document.getElementById('userAlbum'), userList=document.getElementById('userList');
+let currentQuery='', latestResults=[], existingKeys=new Set(), existingLogos=new Map(), guestEnabled=true, albums=[];
 
 function setMessage(text,isError=false){
   message.textContent=text; message.classList.toggle('hidden',!text);
@@ -283,10 +290,59 @@ async function refreshGuestStatus(){
     guestStatus.className='guest-status '+(guestEnabled?'active':'inactive');
     guestToggle.textContent=guestEnabled?'Deaktivieren':'Aktivieren';
     guestWarning.classList.toggle('hidden',!data.default_password);
+    renderUsers(data.users||[]);
   }catch(error){
     guestSection.classList.add('hidden');
     console.warn('Web-Player-Zugang nicht verfügbar:',error);
   }
+}
+function albumSelect(selected){
+  const select=document.createElement('select');select.setAttribute('aria-label','Immich-Album');
+  albums.forEach(album=>{const option=document.createElement('option');option.value=album;option.textContent=album;option.selected=album===selected;select.append(option);});
+  if(selected&&!albums.includes(selected)){const option=document.createElement('option');option.value=selected;option.textContent=selected;option.selected=true;select.append(option);}
+  return select;
+}
+function renderUsers(users){
+  const fragment=document.createDocumentFragment();
+  if(!users.length){const empty=document.createElement('p');empty.className='hint';empty.textContent='Noch keine persönlichen Benutzer angelegt.';fragment.append(empty);}
+  users.forEach(user=>{
+    const card=document.createElement('div');card.className='user-card';
+    const name=document.createElement('div');name.className='name';name.textContent=user.username;
+    const status=document.createElement('span');status.className='guest-status '+(user.enabled?'active':'inactive');status.textContent=user.enabled?'Aktiv':'Gesperrt';
+    const album=albumSelect(user.immich_album||'WEB Radio');
+    album.addEventListener('change',()=>changeUser(album,'album',user.username,{album:album.value}));
+    const toggle=actionButton(user.enabled?'Sperren':'Aktivieren','guest-btn toggle',false,b=>changeUser(b,'toggle',user.username,{enabled:String(!user.enabled)}));
+    const remove=actionButton('Löschen','danger',false,b=>{if(window.confirm('Benutzer „'+user.username+'“ wirklich löschen?'))changeUser(b,'delete',user.username);});
+    card.append(name,status,album,toggle,remove);fragment.append(card);
+  });
+  userList.replaceChildren(fragment);
+}
+async function changeUser(button,action,username,extra={}){
+  button.disabled=true;
+  try{
+    const body=new URLSearchParams(Object.assign({username},extra));
+    const data=await requestJson('__PREFIX__/api/web-auth/users/'+action,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded;charset=UTF-8'},body:body.toString()});
+    setMessage(data.message||'Benutzer aktualisiert.');await refreshGuestStatus();
+  }catch(error){setMessage(error.message,true);}
+  finally{button.disabled=false;}
+}
+userForm.addEventListener('submit',async event=>{
+  event.preventDefault();const button=document.getElementById('userAdd');button.disabled=true;
+  try{
+    const body=new URLSearchParams({username:userName.value,password:userPassword.value,album:userAlbum.value});
+    const data=await requestJson('__PREFIX__/api/web-auth/users/add',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded;charset=UTF-8'},body:body.toString()});
+    userForm.reset();setMessage(data.message||'Benutzer angelegt.');await refreshGuestStatus();
+  }catch(error){setMessage(error.message,true);}
+  finally{button.disabled=false;}
+});
+async function refreshAlbums(){
+  albums=['WEB Radio'];
+  try{
+    const data=await requestJson('__PREFIX__/api/web-auth/albums');albums=data.albums||albums;
+    if(!albums.includes('WEB Radio'))albums.unshift('WEB Radio');
+  }catch(error){setMessage('Immich-Alben konnten nicht geladen werden: '+error.message,true);}
+  userAlbum.replaceChildren(...albums.map(album=>{const option=document.createElement('option');option.value=album;option.textContent=album;return option;}));
+  await refreshGuestStatus();
 }
 guestToggle.addEventListener('click',async()=>{
   guestToggle.disabled=true;
@@ -320,7 +376,7 @@ manualForm.addEventListener("submit",async event=>{
   finally{manualButton.disabled=false;}
 });
 refreshStations(true).catch(()=>setMessage('__ACTION_ERROR__',true));
-refreshGuestStatus();
+refreshAlbums();
 window.setInterval(()=>refreshStations(false),5000);
 """
 
@@ -352,9 +408,17 @@ PAGE_TEMPLATE_ADMIN = """<!doctype html><html lang="de"><head><meta charset="utf
 <input id="guestConfirmPw" type="password" placeholder="Passwort wiederholen" autocomplete="new-password">
 <button id="guestChangePw" class="guest-btn" type="button">Passwort ändern</button>
 </div>
-	<p id="guestWarning" class="guest-warning hidden">⚠ Das initiale Passwort „gast" ist noch aktiv und sollte für einen öffentlichen Zugang geändert werden.</p>
-	<p class="hint">Diese Einstellungen können nur aus einem privaten Netzwerk geändert werden.</p>
-	</section>
+<p id="guestWarning" class="guest-warning hidden">⚠ Das initiale Passwort „gast" ist noch aktiv und sollte für einen öffentlichen Zugang geändert werden.</p>
+<h2>Erlaubte Benutzer</h2>
+<form class="guest-row" id="userForm">
+<input id="userName" name="username" placeholder="Benutzername" autocomplete="username" required>
+<input id="userPassword" name="password" type="password" placeholder="Passwort (mind. 4 Zeichen)" autocomplete="new-password" minlength="4" required>
+<select id="userAlbum" name="album" aria-label="Immich-Album" required><option>WEB Radio</option></select>
+<button id="userAdd" class="guest-btn" type="submit">Benutzer anlegen</button>
+</form>
+<div id="userList" class="user-list"></div>
+<p class="hint">Diese Einstellungen können nur aus einem privaten Netzwerk geändert werden.</p>
+</section>
 	<script>__SCRIPT__</script></main></body></html>"""
 
 PAGE_TEMPLATE_USER = """<!doctype html><html lang="de"><head><meta charset="utf-8">
@@ -403,7 +467,7 @@ class RadioAdminServer:
         self.store, self.logo_dir, self.base_dir = store, Path(logo_dir), Path(base_dir)
         self.on_change, self.host, self.port = on_change, host, port
         self.auth_config_path = Path(auth_config_path or self.base_dir / "web_auth_config.json")
-        self.auth_config = web_auth.AuthConfig(self.auth_config_path) if web_auth else None
+        self.auth_config = web_auth.AuthConfig(self.auth_config_path)
         self.httpd = self.thread = None
 
     def start(self):
@@ -467,6 +531,11 @@ class RadioAdminServer:
                         self.send_error(404)
                     else:
                         self.api_auth_status()
+                elif parsed.path == "/api/web-auth/albums":
+                    if user_page:
+                        self.send_error(404)
+                    else:
+                        self.api_auth_albums()
                 elif parsed.path.startswith("/assets/"):
                     self.serve_asset(urllib.parse.unquote(parsed.path[len("/assets/"):]))
                 else:
@@ -531,6 +600,14 @@ class RadioAdminServer:
                         self.api_auth_toggle(form)
                     elif parsed.path == "/api/web-auth/password":
                         self.api_auth_password(form)
+                    elif parsed.path == "/api/web-auth/users/add":
+                        self.api_user_add(form)
+                    elif parsed.path == "/api/web-auth/users/toggle":
+                        self.api_user_toggle(form)
+                    elif parsed.path == "/api/web-auth/users/album":
+                        self.api_user_album(form)
+                    elif parsed.path == "/api/web-auth/users/delete":
+                        self.api_user_delete(form)
                     else:
                         self.send_error(404)
                 except RadioBrowserUnavailable:
@@ -556,9 +633,6 @@ class RadioAdminServer:
                 if not (address.is_private or address.is_loopback):
                     self.send_json({"ok": False, "error": "Diese Einstellung ist nur im lokalen Netz verfügbar."}, status=403)
                     return False
-                if owner.auth_config is None or web_auth is None:
-                    self.send_json({"ok": False, "error": "Authentifizierung ist nicht verfügbar."}, status=503)
-                    return False
                 return True
 
             def api_auth_status(self):
@@ -572,7 +646,38 @@ class RadioAdminServer:
                     "ok": True,
                     "guest_enabled": bool(config.get("guest_enabled", True)),
                     "default_password": default_password,
+                    "users": [
+                        {"username": username, "enabled": bool(entry.get("enabled", True)),
+                                                 "immich_album": str(entry.get("immich_album") or "WEB Radio")}
+                        for username, entry in sorted(
+                            config.get("users", {}).items(), key=lambda item: item[0].casefold()
+                        )
+                    ],
                 })
+
+            def api_auth_albums(self):
+                if not self.require_local_auth_admin():
+                    return
+                try:
+                    config_path = owner.base_dir / "immich_config.json"
+                    config = json.loads(config_path.read_text(encoding="utf-8"))
+                    base_url = str(config.get("immich_url", "")).strip().rstrip("/")
+                    api_key = str(config.get("api_key", "")).strip()
+                    if not base_url or not api_key:
+                        raise ValueError("Immich-Konfiguration fehlt.")
+                    request = urllib.request.Request(
+                        base_url + "/api/albums",
+                        headers={"x-api-key": api_key, "Accept": "application/json"},
+                    )
+                    with urllib.request.urlopen(request, timeout=15) as response:
+                        documents = json.loads(response.read())
+                    albums = sorted(
+                        (str(album.get("albumName", "")).strip() for album in documents),
+                        key=str.casefold,
+                    )
+                    self.send_json({"ok": True, "albums": [name for name in albums if name]})
+                except (OSError, ValueError, json.JSONDecodeError) as error:
+                    self.send_json({"ok": False, "error": str(error)}, status=503)
 
             def api_auth_toggle(self, form):
                 if not self.require_local_auth_admin():
@@ -595,6 +700,55 @@ class RadioAdminServer:
                     raise ValueError("Die Passwörter stimmen nicht überein.")
                 owner.auth_config.change_password(password)
                 self.send_json({"ok": True, "message": "Gastpasswort geändert."})
+
+            def api_user_add(self, form):
+                if not self.require_local_auth_admin():
+                    return
+                username = form.get("username", [""])[0].strip()
+                password = form.get("password", [""])[0]
+                config = owner.auth_config.load()
+                if username.casefold() == str(config.get("guest_username", "GAST")).casefold():
+                    raise ValueError("Dieser Benutzername ist für den Gastzugang reserviert.")
+                if len(password) < 4:
+                    raise ValueError("Das Passwort muss mindestens vier Zeichen lang sein.")
+                if any(name.casefold() == username.casefold() for name in config.get("users", {})):
+                    raise ValueError("Dieser Benutzer existiert bereits.")
+                album_name = form.get("album", [""])[0].strip()
+                if not album_name:
+                    raise ValueError("Bitte ein Immich-Album auswählen.")
+                owner.auth_config.add_user(username, password)
+                owner.auth_config.set_user_album(username, album_name)
+                self.send_json({"ok": True, "message": "Benutzer angelegt."})
+
+            def api_user_toggle(self, form):
+                if not self.require_local_auth_admin():
+                    return
+                username = form.get("username", [""])[0]
+                raw = form.get("enabled", [""])[0].lower()
+                if raw not in ("true", "false"):
+                    raise ValueError("Ungültiger Aktivierungsstatus.")
+                if not owner.auth_config.toggle_user(username, raw == "true"):
+                    raise ValueError("Benutzer wurde nicht gefunden.")
+                self.send_json({"ok": True, "message": "Benutzer aktualisiert."})
+
+            def api_user_album(self, form):
+                if not self.require_local_auth_admin():
+                    return
+                album_name = form.get("album", [""])[0].strip()
+                if not album_name:
+                    raise ValueError("Bitte ein Immich-Album auswählen.")
+                if not owner.auth_config.set_user_album(
+                    form.get("username", [""])[0], album_name
+                ):
+                    raise ValueError("Benutzer wurde nicht gefunden.")
+                self.send_json({"ok": True, "message": "Immich-Album gespeichert."})
+
+            def api_user_delete(self, form):
+                if not self.require_local_auth_admin():
+                    return
+                if not owner.auth_config.remove_user(form.get("username", [""])[0]):
+                    raise ValueError("Benutzer wurde nicht gefunden.")
+                self.send_json({"ok": True, "message": "Benutzer gelöscht."})
 
             # --- search / stations ---
 
@@ -678,7 +832,7 @@ class RadioAdminServer:
                 self.send_header("Content-Length", str(len(data))); self.send_header("Cache-Control", "no-store")
                 self.end_headers(); self.wfile.write(data)
 
-            def log_message(self, format_string, *args):
+            def log_message(self, format, *args):
                 pass
 
         return Handler

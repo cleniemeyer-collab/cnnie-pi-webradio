@@ -53,8 +53,8 @@ def _immich_req(base_url, api_key, path, data=None):
         raise ImmichServerError(0, url, f"Netzwerkfehler: {err.reason}") from err
 
 
-def _immich_load_assets(config_path):
-    """Bilder aus Immich-Album 'WEB Radio' laden und mischen."""
+def _immich_load_assets(config_path, album_name="WEB Radio"):
+    """Bilder aus einem Immich-Album laden und mischen."""
     LOGGER.info("[Immich] Lade Assets...")
     config_path = Path(config_path)
     if not config_path.is_file():
@@ -65,11 +65,11 @@ def _immich_load_assets(config_path):
     if not base_url or not api_key:
         raise ValueError("Immich-Konfiguration fehlt (URL oder API-Key leer)")
 
-    LOGGER.info("[Immich] Suche Album 'WEB Radio'...")
+    LOGGER.info("[Immich] Suche Album %r...", album_name)
     albums = json.loads(_immich_req(base_url, api_key, "/api/albums").read())
-    album = next((a for a in albums if a.get("albumName") == "WEB Radio"), None)
+    album = next((a for a in albums if a.get("albumName") == album_name), None)
     if album is None:
-        raise ValueError("Immich-Album 'WEB Radio' nicht gefunden")
+        raise ValueError(f"Immich-Album {album_name!r} nicht gefunden")
     album_id = album["id"]
     LOGGER.info("[Immich] Album gefunden: %s (%d Bilder)", album.get("albumName"), album.get("assetCount", 0))
 
@@ -215,14 +215,7 @@ class WebPlayerServer:
         self.user_stores = UserStationStores(store, self.base_dir, self.logo_dir)
 
         self._slide_lock = threading.RLock()
-        self._slide_base_url = None
-        self._slide_api_key = None
-        self._slide_assets = []
-        self._slide_index = 0
-        self._slide_paused = False
-        self._slide_status_state = "idle"  # idle | loading | ready | error
-        self._slide_status_msg = ""
-        self._slide_loading_thread = None
+        self._slide_states = {}
 
         # ── Authentifizierung ─────────────────────────────────────
         self._auth_enabled = web_auth is not None
@@ -262,74 +255,72 @@ class WebPlayerServer:
 
     # ── Diashow-Status ─────────────────────────────────────────────────
 
-    def _slide_init(self):
-        """Startet das asynchrone Laden der Diashow-Assets."""
-        with self._slide_lock:
-            if self._slide_status_state == "loading":
-                return  # Bereits im Gange
-            self._slide_status_state = "loading"
-            self._slide_status_msg = ""
-            self._slide_assets = []
-            self._slide_index = 0
-            self._slide_paused = False
-            # Im Hintergrund-Thread laden
-            self._slide_loading_thread = threading.Thread(
-                target=self._slide_load_background,
-                name="slide-loader",
-                daemon=True
-            )
-            self._slide_loading_thread.start()
+    def _slide_state(self, album_name):
+        return self._slide_states.setdefault(album_name, {
+            "base_url": None, "api_key": None, "assets": [], "index": 0,
+            "paused": False, "state": "idle", "message": "", "thread": None,
+        })
 
-    def _slide_load_background(self):
-        """Lädt die Immich-Assets im Hintergrund."""
+    def _slide_init(self, album_name):
+        """Startet das asynchrone Laden eines Album-Diashowzustands."""
+        with self._slide_lock:
+            state = self._slide_state(album_name)
+            if state["state"] == "loading":
+                return
+            state.update(state="loading", message="", assets=[], index=0, paused=False)
+            state["thread"] = threading.Thread(
+                target=self._slide_load_background, args=(album_name,),
+                name="slide-loader-" + album_name, daemon=True,
+            )
+            state["thread"].start()
+
+    def _slide_load_background(self, album_name):
         try:
-            base_url, api_key, assets = _immich_load_assets(self.immich_config)
+            base_url, api_key, assets = _immich_load_assets(self.immich_config, album_name)
             with self._slide_lock:
-                self._slide_base_url = base_url
-                self._slide_api_key = api_key
-                self._slide_assets = assets
-                self._slide_status_state = "ready"
-                self._slide_status_msg = f"{len(assets)} Bilder geladen"
-            LOGGER.info("[Slideshow] Hintergrund-Laden erfolgreich: %d Bilder", len(assets))
+                state = self._slide_state(album_name)
+                state.update(base_url=base_url, api_key=api_key, assets=assets,
+                             state="ready", message=f"{len(assets)} Bilder geladen")
+            LOGGER.info("[Slideshow] Album %r geladen: %d Bilder", album_name, len(assets))
         except Exception as exc:
             with self._slide_lock:
-                self._slide_status_state = "error"
-                self._slide_status_msg = str(exc)
+                self._slide_state(album_name).update(state="error", message=str(exc))
             LOGGER.exception("[Slideshow] Hintergrund-Laden fehlgeschlagen: %s", exc)
 
-    def _slide_next(self):
+    def _slide_next(self, album_name):
         with self._slide_lock:
-            if not self._slide_assets:
+            state = self._slide_state(album_name)
+            if not state["assets"]:
                 return None
-            asset = self._slide_assets[self._slide_index]
-            self._slide_index = (self._slide_index + 1) % len(self._slide_assets)
+            asset = state["assets"][state["index"]]
+            state["index"] = (state["index"] + 1) % len(state["assets"])
             return asset
 
-    def _slide_prev(self):
+    def _slide_prev(self, album_name):
         with self._slide_lock:
-            if not self._slide_assets:
+            state = self._slide_state(album_name)
+            if not state["assets"]:
                 return None
-            self._slide_index = (self._slide_index - 1) % len(self._slide_assets)
-            return self._slide_assets[self._slide_index]
+            state["index"] = (state["index"] - 1) % len(state["assets"])
+            return state["assets"][state["index"]]
 
-    def _slide_toggle_pause(self):
+    def _slide_toggle_pause(self, album_name):
         with self._slide_lock:
-            self._slide_paused = not self._slide_paused
-            return self._slide_paused
+            state = self._slide_state(album_name)
+            state["paused"] = not state["paused"]
+            return state["paused"]
 
-    def _slide_status(self):
+    def _slide_status(self, album_name):
         with self._slide_lock:
-            return {
-                "state": self._slide_status_state,
-                "message": self._slide_status_msg,
-                "total": len(self._slide_assets),
-                "index": self._slide_index,
-                "paused": self._slide_paused,
-            }
+            state = self._slide_state(album_name)
+            return {"state": state["state"], "message": state["message"],
+                    "total": len(state["assets"]), "index": state["index"],
+                    "paused": state["paused"], "album": album_name}
 
-    def _fetch_thumbnail(self, asset_id):
+    def _fetch_thumbnail(self, album_name, asset_id):
         try:
-            with _immich_req(self._slide_base_url, self._slide_api_key,
+            state = self._slide_state(album_name)
+            with _immich_req(state["base_url"], state["api_key"],
                              "/api/assets/" + urllib.parse.quote(asset_id) +
                              "/thumbnail?size=preview") as resp:
                 return resp.read()
@@ -726,28 +717,34 @@ class WebPlayerServer:
 
             # ── Diashow-Endpoints ────────────────────────────────────
 
+            def _sl_album(self):
+                return owner._auth_config.album_for_user(self._get_current_user())
+
             def _sl_init(self):
                 try:
-                    LOGGER.info("[Slideshow] Init gestartet")
-                    owner._slide_init()  # Startet Hintergrund-Thread
+                    album_name = self._sl_album()
+                    LOGGER.info("[Slideshow] Init für Album %r gestartet", album_name)
+                    owner._slide_init(album_name)
                     self._json({"ok": True, "state": "loading", "message": "Laden gestartet"})
                 except Exception as exc:
                     LOGGER.exception("[Slideshow] Init fehlgeschlagen: %s", exc)
                     self._json({"ok": False, "error": str(exc)}, status=500)
 
             def _sl_next(self):
+                album_name = self._sl_album()
                 with owner._slide_lock:
-                    if owner._slide_status_state == "loading":
+                    state = owner._slide_state(album_name)
+                    if state["state"] == "loading":
                         self._json({"ok": False, "error": "Noch wird geladen ..."}, 503)
                         return
-                    if owner._slide_status_state == "error":
-                        self._json({"ok": False, "error": owner._slide_status_msg}, 500)
+                    if state["state"] == "error":
+                        self._json({"ok": False, "error": state["message"]}, 500)
                         return
-                    asset = owner._slide_next()
+                    asset = owner._slide_next(album_name)
                 if asset is None:
                     self._json({"ok": False, "error": "Slideshow nicht initialisiert"}, 500)
                     return
-                thumb = owner._fetch_thumbnail(asset["id"])
+                thumb = owner._fetch_thumbnail(album_name, asset["id"])
                 if thumb is None:
                     self._json({"ok": False, "error": "Thumbnail nicht verfügbar"}, 502)
                     return
@@ -758,18 +755,20 @@ class WebPlayerServer:
                 })
 
             def _sl_prev(self):
+                album_name = self._sl_album()
                 with owner._slide_lock:
-                    if owner._slide_status_state == "loading":
+                    state = owner._slide_state(album_name)
+                    if state["state"] == "loading":
                         self._json({"ok": False, "error": "Noch wird geladen ..."}, 503)
                         return
-                    if owner._slide_status_state == "error":
-                        self._json({"ok": False, "error": owner._slide_status_msg}, 500)
+                    if state["state"] == "error":
+                        self._json({"ok": False, "error": state["message"]}, 500)
                         return
-                    asset = owner._slide_prev()
+                    asset = owner._slide_prev(album_name)
                 if asset is None:
                     self._json({"ok": False, "error": "Slideshow nicht initialisiert"}, 500)
                     return
-                thumb = owner._fetch_thumbnail(asset["id"])
+                thumb = owner._fetch_thumbnail(album_name, asset["id"])
                 if thumb is None:
                     self._json({"ok": False, "error": "Thumbnail nicht verfügbar"}, 502)
                     return
@@ -780,10 +779,11 @@ class WebPlayerServer:
                 })
 
             def _sl_pause(self):
-                paused = owner._slide_toggle_pause()
+                paused = owner._slide_toggle_pause(self._sl_album())
                 self._json({"ok": True, "paused": paused})
 
             def _sl_status(self):
-                self._json({"ok": True, **owner._slide_status()})
+                album_name = self._sl_album()
+                self._json({"ok": True, **owner._slide_status(album_name)})
 
         return Handler

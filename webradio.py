@@ -52,6 +52,9 @@ SLIDESHOW_IDLE_MS = 2 * 60 * 1000
 SLIDE_DURATION_SECONDS = 90
 STREAM_WATCHDOG_INTERVAL_MS = 5000
 STREAM_STALL_TIMEOUT_SECONDS = 25
+LMS_SERVER_URL = "http://192.168.42.185:9000"
+LMS_PLAYER_ID = "b8:27:eb:eb:19:b4"
+LMS_STATUS_INTERVAL_MS = 2000
 
 
 class ImmichApiError(Exception):
@@ -479,6 +482,7 @@ class RadioWindow(QWidget):
         self.mode = "radio"
         self.current_artist = ""
         self.current_title = ""
+        self.lms_cover_url = ""
         self.slideshow_loader = None
         self.slideshow_loaders = set()
         self.slideshow_pixmap = None
@@ -507,6 +511,9 @@ class RadioWindow(QWidget):
         self.stream_watchdog_timer = QTimer(self)
         self.stream_watchdog_timer.timeout.connect(self.check_radio_stream)
         self.stream_watchdog_timer.start(STREAM_WATCHDOG_INTERVAL_MS)
+        self.lms_status_timer = QTimer(self)
+        self.lms_status_timer.timeout.connect(self.update_lms_status)
+        self.lms_status_timer.start(LMS_STATUS_INTERVAL_MS)
         self.logo_cache = {}
         self.web_server = None
         self.stations_changed.connect(self.reload_stations)
@@ -514,6 +521,8 @@ class RadioWindow(QWidget):
         self.build_ui()
         self.apply_style()
         self.update_selection()
+        self.set_bluetooth_enabled(False)
+        self.set_lms_enabled(False)
 
         self.idle_timer = QTimer(self)
         self.idle_timer.setSingleShot(True)
@@ -641,6 +650,13 @@ class RadioWindow(QWidget):
             stretch = 1 if self.compact_layout else (4 if offset == 0 else (2 if abs(offset) == 1 else 1))
             chooser.addWidget(button, stretch)
             self.station_buttons.append(button)
+
+        self.lms_cover = QLabel("Kein Albumcover verfügbar")
+        self.lms_cover.setObjectName("lmsCover")
+        self.lms_cover.setAlignment(Qt.AlignCenter)
+        self.lms_cover.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.lms_cover.hide()
+        chooser.addWidget(self.lms_cover, 1)
 
         root.addWidget(self.carousel, 1)
 
@@ -918,6 +934,8 @@ class RadioWindow(QWidget):
         super().closeEvent(event)
 
     def stop_background_tasks(self):
+        self.set_bluetooth_enabled(False)
+        self.set_lms_enabled(False)
         self.idle_timer.stop()
         self.stop_slideshow(restart_idle_timer=False)
         for loader in tuple(self.slideshow_loaders):
@@ -925,6 +943,7 @@ class RadioWindow(QWidget):
             loader.wait(31000)
         self.gst_bus_timer.stop()
         self.stream_watchdog_timer.stop()
+        self.lms_status_timer.stop()
         self.player.set_state(Gst.State.NULL)
         if self.web_server is not None:
             self.web_server.stop()
@@ -1173,7 +1192,11 @@ class RadioWindow(QWidget):
         if self.mode != "radio":
             if self.mode == "mpd":
                 self.stop_mpd()
+            elif self.mode == "lms":
+                self.set_lms_enabled(False)
+            self.set_bluetooth_enabled(False)
             self.mode = "radio"
+            self.set_lms_view(False)
             self.mode_button.setText("Quelle:\nRadio")
 
         name, url = self.stations[self.selected_index]
@@ -1196,15 +1219,21 @@ class RadioWindow(QWidget):
     def toggle_mode(self):
         next_mode = {
             "radio": "mpd",
-            "mpd": "bluetooth",
+            "mpd": "lms",
+            "lms": "bluetooth",
             "bluetooth": "radio",
         }.get(self.mode, "radio")
 
         if self.mode == "mpd":
             self.stop_mpd()
+        elif self.mode == "lms":
+            self.set_lms_enabled(False)
 
         self.player.set_state(Gst.State.NULL)
+        bluetooth_ready = self.set_bluetooth_enabled(next_mode == "bluetooth")
+        lms_ready = self.set_lms_enabled(next_mode == "lms")
         self.mode = next_mode
+        self.set_lms_view(next_mode == "lms")
 
         if next_mode == "mpd":
             self.mode_button.setText("Quelle:\nMPD")
@@ -1212,6 +1241,11 @@ class RadioWindow(QWidget):
             self.track_info.setText("Wiedergabe über Music Player Daemon")
             self.set_logo("MPD")
             self.start_mpd()
+        elif next_mode == "lms":
+            self.mode_button.setText("Quelle:\nLMS")
+            self.now_station.setText("LMS")
+            self.track_info.setText("LMS bereit – Wiedergabe über Handy-App steuern")
+            self.update_lms_status()
         elif next_mode == "bluetooth":
             self.mode_button.setText("Quelle:\nBluetooth")
             self.now_station.setText("Bluetooth")
@@ -1225,7 +1259,141 @@ class RadioWindow(QWidget):
                 self.start_selected_station()
             elif self.stations:
                 self.start_selected_station()
+        if not bluetooth_ready:
+            action = "gestartet" if next_mode == "bluetooth" else "gestoppt"
+            self.track_info.setText(f"Bluetooth-Dienst konnte nicht {action} werden")
+        elif not lms_ready:
+            action = "gestartet" if next_mode == "lms" else "gestoppt"
+            self.track_info.setText(f"LMS-Player konnte nicht {action} werden")
         self.update_selection()
+
+    def set_lms_view(self, enabled):
+        for button in self.station_buttons:
+            button.setVisible(not enabled)
+        self.lms_cover.setVisible(enabled)
+        self.now_logo.setVisible(not enabled)
+        if not enabled:
+            self.lms_cover_url = ""
+            self.lms_cover.setPixmap(QPixmap())
+            self.lms_cover.setText("Kein Albumcover verfügbar")
+
+    def update_lms_status(self):
+        if self.mode != "lms":
+            return
+        request_body = json.dumps({
+            "id": 1,
+            "method": "slim.request",
+            "params": [
+                LMS_PLAYER_ID,
+                ["status", "-", 1, "tags:alKcu"],
+            ],
+        }).encode("utf-8")
+        request = urllib.request.Request(
+            LMS_SERVER_URL + "/jsonrpc.js",
+            data=request_body,
+            headers={"Content-Type": "application/json"},
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=1.5) as response:
+                status = json.loads(response.read().decode("utf-8")).get("result", {})
+        except (OSError, ValueError, urllib.error.URLError) as error:
+            print(f"LMS-Status konnte nicht geladen werden: {error}", file=sys.stderr)
+            return
+
+        track = status.get("remoteMeta") or next(
+            iter(status.get("playlist_loop") or ()), {}
+        )
+        title = str(track.get("title") or "").strip()
+        artist = str(track.get("artist") or "").strip()
+        if title or artist:
+            self.track_info.setText(" — ".join(value for value in (title, artist) if value))
+        elif status.get("mode") == "stop":
+            self.track_info.setText("LMS bereit – keine Wiedergabe")
+
+        artwork_url = str(track.get("artwork_url") or "").strip()
+        if artwork_url and not urllib.parse.urlsplit(artwork_url).scheme:
+            artwork_url = urllib.parse.urljoin(LMS_SERVER_URL + "/", artwork_url)
+        if artwork_url == self.lms_cover_url:
+            return
+        self.lms_cover_url = artwork_url
+        self.lms_cover.setPixmap(QPixmap())
+        if not artwork_url:
+            self.lms_cover.setText("Kein Albumcover verfügbar")
+            return
+        try:
+            with urllib.request.urlopen(artwork_url, timeout=2) as response:
+                image_data = response.read()
+        except (OSError, urllib.error.URLError) as error:
+            print(f"LMS-Cover konnte nicht geladen werden: {error}", file=sys.stderr)
+            self.lms_cover.setText("Albumcover nicht verfügbar")
+            return
+        pixmap = QPixmap()
+        if pixmap.loadFromData(image_data):
+            self.lms_cover.setText("")
+            self.lms_cover.setPixmap(
+                pixmap.scaled(
+                    self.lms_cover.size(),
+                    Qt.KeepAspectRatio,
+                    Qt.SmoothTransformation,
+                )
+            )
+        else:
+            self.lms_cover.setText("Albumcover nicht verfügbar")
+
+    @staticmethod
+    def set_lms_enabled(enabled):
+        action = "start" if enabled else "stop"
+        command = ["sudo", "-n", "systemctl", action, "squeezelite.service"]
+        try:
+            result = subprocess.run(command, check=False, timeout=10)
+        except (OSError, subprocess.TimeoutExpired) as error:
+            print(f"LMS-Umschaltung fehlgeschlagen: {error}", file=sys.stderr)
+            return False
+        if result.returncode != 0:
+            print(
+                f"LMS-Umschaltung fehlgeschlagen: {' '.join(command)} "
+                f"(Exit-Code {result.returncode})",
+                file=sys.stderr,
+            )
+            return False
+        return True
+
+    @staticmethod
+    def set_bluetooth_enabled(enabled):
+        commands = (
+            [
+                ["sudo", "-n", "systemctl", "unmask", "--runtime", "bluetooth.service"],
+                ["sudo", "-n", "rfkill", "unblock", "bluetooth"],
+                ["sudo", "-n", "systemctl", "start", "bluetooth.service"],
+            ]
+            if enabled
+            else [
+                ["sudo", "-n", "rfkill", "block", "bluetooth"],
+                [
+                    "sudo",
+                    "-n",
+                    "systemctl",
+                    "mask",
+                    "--runtime",
+                    "--now",
+                    "bluetooth.service",
+                ],
+            ]
+        )
+        for command in commands:
+            try:
+                result = subprocess.run(command, check=False, timeout=10)
+            except (OSError, subprocess.TimeoutExpired) as error:
+                print(f"Bluetooth-Umschaltung fehlgeschlagen: {error}", file=sys.stderr)
+                return False
+            if result.returncode != 0:
+                print(
+                    f"Bluetooth-Umschaltung fehlgeschlagen: {' '.join(command)} "
+                    f"(Exit-Code {result.returncode})",
+                    file=sys.stderr,
+                )
+                return False
+        return True
 
     @staticmethod
     def with_mpd(action):
